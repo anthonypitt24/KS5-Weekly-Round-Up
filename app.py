@@ -2,7 +2,9 @@ import streamlit as st
 import requests
 import html
 import re
-from datetime import datetime
+from datetime import datetime, date
+from urllib.parse import quote_plus
+
 
 # ============================================================
 # PAGE CONFIG
@@ -12,34 +14,100 @@ st.set_page_config(
     page_title="KS5 Progression Hub",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
+
+
+# ============================================================
+# STYLING
+# ============================================================
+
+st.markdown("""
+<style>
+
+.main {
+    background-color: #f7f9fc;
+}
+
+.hero {
+    padding: 28px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #172554, #2563eb);
+    color: white;
+    margin-bottom: 25px;
+}
+
+.hero h1 {
+    font-size: 38px;
+    margin-bottom: 5px;
+}
+
+.hero p {
+    font-size: 17px;
+    opacity: 0.95;
+}
+
+.card {
+    background: white;
+    padding: 20px;
+    border-radius: 16px;
+    border: 1px solid #e5e7eb;
+    margin-bottom: 14px;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.04);
+}
+
+.card h3 {
+    margin-top: 0;
+}
+
+.badge {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 20px;
+    background: #e0e7ff;
+    color: #3730a3;
+    font-size: 12px;
+    font-weight: 700;
+    margin-right: 5px;
+}
+
+.source {
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.bulletin {
+    background: white;
+    padding: 28px;
+    border-radius: 16px;
+    border: 1px solid #d1d5db;
+}
+
+.small {
+    font-size: 13px;
+    color: #6b7280;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
 
 # ============================================================
 # CONSTANTS
 # ============================================================
 
+TODAY = date.today()
+
 ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/gb/search/1"
 
-SEARCHES = {
-    "All suitable opportunities": "",
-    "Apprenticeships": "apprentice",
-    "Trainee roles": "trainee",
-    "School leaver": "school leaver",
-    "Entry level": "entry level",
-    "Junior roles": "junior",
-    "Graduate / early career": "graduate",
-}
-
-POPULAR_CAREERS = [
-    "Accounting",
-    "Administration",
-    "Business",
+CAREER_AREAS = [
+    "All subjects",
+    "Accounting & Finance",
+    "Administration & Business",
     "Construction",
-    "Creative",
+    "Creative & Design",
     "Education",
     "Engineering",
-    "Finance",
     "Healthcare",
     "IT & Technology",
     "Law",
@@ -48,557 +116,757 @@ POPULAR_CAREERS = [
     "Science",
     "Social Care",
     "Sport",
+    "Other"
 ]
 
-# Words that strongly suggest a role is NOT suitable
-# for a typical sixth-form student.
-HARD_EXCLUDE_TITLE = [
-    "senior",
-    "director",
-    "head of",
-    "chief",
-    "principal",
-    "associate director",
-    "regional manager",
-    "area manager",
-    "general manager",
-    "operations manager",
-    "department manager",
-    "store manager",
-    "branch manager",
-    "project manager",
-    "account manager",
-    "sales manager",
-    "marketing manager",
-    "finance manager",
-    "hr manager",
-    "human resources manager",
-    "team manager",
-    "shift manager",
-    "duty manager",
-    "practice manager",
-    "office manager",
-    "registered manager",
-    "service manager",
-    "clinical manager",
-    "nursing manager",
-    "lead developer",
-    "lead engineer",
-    "lead designer",
-    "technical lead",
-    "principal engineer",
+YEAR_GROUPS = [
+    "All KS5",
+    "Year 12",
+    "Year 13",
+    "Year 12 & 13"
 ]
 
-# Positive indicators.
-EARLY_CAREER_TERMS = [
-    "apprentice",
-    "apprenticeship",
-    "trainee",
-    "school leaver",
-    "school-leaver",
-    "entry level",
-    "entry-level",
-    "junior",
-    "early career",
-    "early-career",
-    "graduate scheme",
-    "graduate programme",
-    "graduate program",
-    "level 2",
-    "level 3",
-    "level 4",
-    "level 5",
-    "level 6",
-    "level 7",
-    "foundation",
+LOCATIONS = [
+    "All locations",
+    "UK-wide",
+    "England",
+    "Scotland",
+    "Wales",
+    "Northern Ireland",
+    "North West",
+    "North East",
+    "Yorkshire",
+    "West Midlands",
+    "East Midlands",
+    "East of England",
+    "London",
+    "South East",
+    "South West"
 ]
+
 
 # ============================================================
-# PAGE STYLING
+# SESSION STATE
 # ============================================================
 
-st.markdown(
-    """
-    <style>
+if "opportunities" not in st.session_state:
+    st.session_state.opportunities = []
 
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
+if "custom_opportunities" not in st.session_state:
+    st.session_state.custom_opportunities = []
+
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = None
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def clean_text(value):
+    if not value:
+        return ""
+
+    value = html.unescape(str(value))
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip()
+
+
+def make_opportunity(
+    title,
+    organisation,
+    category,
+    description,
+    location,
+    date_text,
+    closing_date,
+    url,
+    source,
+    year_group="All KS5",
+    subject="All subjects",
+    verified=False
+):
+    return {
+        "id": f"{category}-{title}-{organisation}-{url}",
+        "title": clean_text(title),
+        "organisation": clean_text(organisation),
+        "category": category,
+        "description": clean_text(description),
+        "location": clean_text(location),
+        "date": clean_text(date_text),
+        "closing_date": clean_text(closing_date),
+        "url": url,
+        "source": source,
+        "year_group": year_group,
+        "subject": subject,
+        "verified": verified
     }
 
-    [data-testid="stMetric"] {
-        border: 1px solid rgba(128,128,128,0.25);
-        border-radius: 12px;
-        padding: 12px;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ============================================================
-# HEADER
+# ADZUNA
 # ============================================================
 
-st.title("🎓 KS5 Progression Hub")
+def get_adzuna_credentials():
 
-st.markdown(
-    """
-    **Your next step starts here.**
-
-    Live jobs and early-career opportunities for sixth-form students,
-    powered by Adzuna.
-    """
-)
-
-st.divider()
-
-# ============================================================
-# API CREDENTIALS
-# ============================================================
-
-def get_credentials():
     try:
-        return (
-            st.secrets["ADZUNA_APP_ID"],
-            st.secrets["ADZUNA_APP_KEY"],
-        )
+        app_id = st.secrets["ADZUNA_APP_ID"]
+        app_key = st.secrets["ADZUNA_APP_KEY"]
+
+        return app_id, app_key
+
     except Exception:
         return None, None
 
 
-APP_ID, APP_KEY = get_credentials()
-
-# ============================================================
-# TEXT HELPERS
-# ============================================================
-
-def clean_text(text):
-    if not text:
-        return ""
-
-    text = html.unescape(str(text))
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
-
-
-def truncate(text, length=320):
-    text = clean_text(text)
-
-    if len(text) <= length:
-        return text
-
-    return text[:length].rsplit(" ", 1)[0] + "..."
-
-
-def get_title(job):
-    return clean_text(
-        job.get("title", "Opportunity")
-    )
-
-
-def get_company(job):
-    company = job.get("company", {})
-
-    if isinstance(company, dict):
-        return clean_text(
-            company.get(
-                "display_name",
-                "Employer not stated"
-            )
-        )
-
-    return "Employer not stated"
-
-
-def get_location(job):
-    location = job.get("location", {})
-
-    if isinstance(location, dict):
-        return clean_text(
-            location.get(
-                "display_name",
-                "Location not stated"
-            )
-        )
-
-    return "Location not stated"
-
-
-def get_category(job):
-    category = job.get("category", {})
-
-    if isinstance(category, dict):
-        return clean_text(
-            category.get(
-                "label",
-                "Other"
-            )
-        )
-
-    return "Other"
-
-
-# ============================================================
-# SALARY
-# ============================================================
-
-def format_salary(job):
-
-    minimum = job.get("salary_min")
-    maximum = job.get("salary_max")
-
-    try:
-        if minimum and maximum:
-
-            minimum = int(minimum)
-            maximum = int(maximum)
-
-            if minimum == maximum:
-                return f"£{minimum:,}"
-
-            return f"£{minimum:,} – £{maximum:,}"
-
-        if minimum:
-            return f"From £{int(minimum):,}"
-
-        if maximum:
-            return f"Up to £{int(maximum):,}"
-
-    except Exception:
-        pass
-
-    return "Salary not stated"
-
-
-# ============================================================
-# CONTRACT
-# ============================================================
-
-def format_contract(job):
-
-    contract_type = job.get("contract_type")
-    contract_time = job.get("contract_time")
-
-    parts = []
-
-    if contract_type:
-        parts.append(
-            str(contract_type)
-            .replace("_", " ")
-            .title()
-        )
-
-    if contract_time:
-        parts.append(
-            str(contract_time)
-            .replace("_", " ")
-            .title()
-        )
-
-    if parts:
-        return " • ".join(parts)
-
-    return "Contract details not stated"
-
-
-# ============================================================
-# DATE
-# ============================================================
-
-def format_created_date(job):
-
-    created = job.get("created")
-
-    if not created:
-        return "Date unavailable"
-
-    try:
-
-        dt = datetime.fromisoformat(
-            created.replace("Z", "+00:00")
-        )
-
-        return dt.strftime("%d %b %Y")
-
-    except Exception:
-        return "Date unavailable"
-
-
-# ============================================================
-# STUDENT SUITABILITY
-# ============================================================
-
-def assess_student_suitability(job):
-
-    title = get_title(job).lower()
-
-    description = clean_text(
-        job.get("description", "")
-    ).lower()
-
-    combined = f"{title} {description}"
-
-    score = 0
-    reasons = []
-
-    # --------------------------------------------------------
-    # HARD TITLE EXCLUSIONS
-    # --------------------------------------------------------
-
-    for term in HARD_EXCLUDE_TITLE:
-
-        if term in title:
-
-            return {
-                "score": 0,
-                "label": "Not suitable",
-                "colour": "🔴",
-                "include": False,
-                "reasons": [
-                    "Role appears to require experienced/senior staff."
-                ],
-            }
-
-    # --------------------------------------------------------
-    # POSITIVE TERMS
-    # --------------------------------------------------------
-
-    matched_terms = []
-
-    for term in EARLY_CAREER_TERMS:
-
-        if term in combined:
-
-            matched_terms.append(term)
-
-    # Strongest indicators
-    if "apprentice" in combined:
-        score += 50
-        reasons.append("Apprenticeship/Apprentice role")
-
-    if "trainee" in combined:
-        score += 35
-        reasons.append("Trainee role")
-
-    if "school leaver" in combined:
-        score += 40
-        reasons.append("School-leaver friendly")
-
-    if "entry level" in combined or "entry-level" in combined:
-        score += 30
-        reasons.append("Entry-level role")
-
-    if "junior" in combined:
-        score += 25
-        reasons.append("Junior role")
-
-    if "graduate" in combined:
-        score += 15
-        reasons.append("Graduate/early-career opportunity")
-
-    # Qualification indicators
-    level_matches = [
-        term for term in [
-            "level 2",
-            "level 3",
-            "level 4",
-            "level 5",
-            "level 6",
-            "level 7",
-        ]
-        if term in combined
-    ]
-
-    if level_matches:
-        score += 20
-        reasons.append(
-            "Qualification/apprenticeship level mentioned"
-        )
-
-    # --------------------------------------------------------
-    # NEGATIVE DESCRIPTION INDICATORS
-    # --------------------------------------------------------
-
-    negative_description_terms = [
-        "years of experience required",
-        "5 years experience",
-        "5+ years experience",
-        "3 years experience",
-        "3+ years experience",
-        "experienced professional",
-        "extensive experience",
-        "proven track record",
-    ]
-
-    for term in negative_description_terms:
-
-        if term in combined:
-            score -= 15
-
-    # --------------------------------------------------------
-    # FINAL CLASSIFICATION
-    # --------------------------------------------------------
-
-    if score >= 50:
-
-        return {
-            "score": min(score, 100),
-            "label": "Excellent student match",
-            "colour": "🟢",
-            "include": True,
-            "reasons": reasons,
-        }
-
-    if score >= 30:
-
-        return {
-            "score": min(score, 100),
-            "label": "Good student match",
-            "colour": "🟡",
-            "include": True,
-            "reasons": reasons,
-        }
-
-    if score >= 15:
-
-        return {
-            "score": min(score, 100),
-            "label": "Potential match",
-            "colour": "🟠",
-            "include": True,
-            "reasons": reasons,
-        }
-
-    return {
-        "score": score,
-        "label": "Low student match",
-        "colour": "⚪",
-        "include": False,
-        "reasons": [],
-    }
-
-
-# ============================================================
-# DEDUPLICATION
-# ============================================================
-
-def deduplicate_jobs(jobs):
-
-    seen = set()
-    output = []
-
-    for job in jobs:
-
-        job_id = str(
-            job.get("id", "")
-        )
-
-        if not job_id:
-
-            job_id = (
-                get_title(job).lower()
-                + get_company(job).lower()
-            )
-
-        if job_id in seen:
-            continue
-
-        seen.add(job_id)
-        output.append(job)
-
-    return output
-
-
-# ============================================================
-# ADZUNA API
-# ============================================================
-
-@st.cache_data(ttl=900, show_spinner=False)
-def search_adzuna(
-    app_id,
-    app_key,
-    what="",
-    where="",
-    results_per_page=30,
+def search_adzuna_apprenticeships(
+    subject="All subjects",
+    location="All locations",
+    results=30
 ):
+
+    app_id, app_key = get_adzuna_credentials()
+
+    if not app_id or not app_key:
+        return []
+
+    keywords = [
+        "apprentice",
+        "apprenticeship",
+        "trainee",
+        "school leaver",
+        "degree apprenticeship"
+    ]
+
+    if subject != "All subjects":
+        subject_keywords = {
+            "Accounting & Finance": "accounting finance",
+            "Administration & Business": "business administration",
+            "Construction": "construction",
+            "Creative & Design": "creative design",
+            "Education": "education teaching",
+            "Engineering": "engineering",
+            "Healthcare": "healthcare",
+            "IT & Technology": "IT technology software",
+            "Law": "law legal",
+            "Marketing": "marketing",
+            "Media": "media",
+            "Science": "science laboratory",
+            "Social Care": "social care",
+            "Sport": "sport"
+        }
+
+        keywords.append(
+            subject_keywords.get(subject, subject)
+        )
+
+    query = " ".join(keywords)
 
     params = {
         "app_id": app_id,
         "app_key": app_key,
-        "results_per_page": results_per_page,
-        "sort_by": "date",
+        "results_per_page": results,
+        "what": query,
         "content-type": "application/json",
+        "sort_by": "date",
+        "max_days_old": 30
     }
 
-    if what:
-        params["what"] = what
-
-    if where:
-        params["where"] = where
+    if location != "All locations":
+        params["where"] = location
 
     try:
 
         response = requests.get(
             ADZUNA_URL,
             params=params,
-            timeout=20,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "KS5-Progression-Hub/1.0",
-            },
+            timeout=15
         )
 
-        if response.status_code != 200:
-
-            return {
-                "success": False,
-                "jobs": [],
-                "count": 0,
-                "error": (
-                    f"Adzuna returned HTTP "
-                    f"{response.status_code}"
-                ),
-            }
+        response.raise_for_status()
 
         data = response.json()
 
-        return {
-            "success": True,
-            "jobs": data.get("results", []),
-            "count": data.get("count", 0),
-            "error": None,
-        }
+    except Exception as e:
 
-    except requests.exceptions.Timeout:
+        st.warning(
+            f"Adzuna could not be reached: {e}"
+        )
 
-        return {
-            "success": False,
-            "jobs": [],
-            "count": 0,
-            "error": "Adzuna timed out.",
-        }
+        return []
 
-    except requests.exceptions.RequestException as exc:
+    opportunities = []
 
-        return {
-            "success": False,
-            "jobs": [],
-            "count": 0,
-            "error": str(exc),
-        }
+    for job in data.get("results", []):
 
-    except ValueError:
+        title = clean_text(
+            job.get("title", "")
+        )
 
-        return {
-            "success": False,
-            "jobs": [],
-            "count": 0,
-            "error": "Adzuna returned invalid data.",
-        }
+        description = clean_text(
+            job.get("description", "")
+        )
+
+        combined = (
+            title + " " + description
+        ).lower()
+
+        # ----------------------------------------------------
+        # STRICT STUDENT/APPRENTICESHIP FILTER
+        # ----------------------------------------------------
+
+        positive_terms = [
+            "apprentice",
+            "apprenticeship",
+            "trainee",
+            "school leaver",
+            "degree apprentice",
+            "higher apprentice",
+            "level 2",
+            "level 3",
+            "level 4",
+            "level 5",
+            "level 6",
+            "level 7"
+        ]
+
+        negative_terms = [
+            "senior",
+            "manager",
+            "director",
+            "head of",
+            "lead engineer",
+            "principal",
+            "experienced professional",
+            "minimum 5 years",
+            "minimum 3 years",
+            "qualified accountant"
+        ]
+
+        if not any(
+            term in combined
+            for term in positive_terms
+        ):
+            continue
+
+        if any(
+            term in combined
+            for term in negative_terms
+        ):
+            continue
+
+        company = clean_text(
+            job.get("company", {}).get(
+                "display_name",
+                ""
+            )
+        )
+
+        location_name = clean_text(
+            job.get("location", {}).get(
+                "display_name",
+                ""
+            )
+        )
+
+        url = job.get("redirect_url", "")
+
+        salary = ""
+
+        minimum = job.get("salary_min")
+        maximum = job.get("salary_max")
+
+        if minimum and maximum:
+            salary = (
+                f"Salary: £{minimum:,.0f}–"
+                f"£{maximum:,.0f}"
+            )
+        elif minimum:
+            salary = f"Salary from £{minimum:,.0f}"
+
+        description_final = description
+
+        if salary:
+            description_final += f" {salary}"
+
+        opportunities.append(
+            make_opportunity(
+                title=title,
+                organisation=company,
+                category="🎓 Apprenticeship",
+                description=description_final,
+                location=location_name,
+                date_text="Live vacancy",
+                closing_date="Check vacancy",
+                url=url,
+                source="Adzuna",
+                year_group="Year 12 & 13",
+                subject=subject,
+                verified=False
+            )
+        )
+
+    return opportunities
+
+
+# ============================================================
+# UCAS
+# ============================================================
+
+def ucas_open_days_link():
+
+    return (
+        "https://www.ucas.com/explore/search/events"
+        "?eventType=Open%20day"
+    )
+
+
+def get_ucas_opportunities():
+
+    return [
+
+        make_opportunity(
+            title="UCAS Open Days & Events",
+            organisation="UCAS",
+            category="🏫 University Open Days",
+            description=(
+                "Search university open days, exhibitions "
+                "and other higher education events. "
+                "Use the UCAS filters to find events by "
+                "institution, location and event type."
+            ),
+            location="UK",
+            date_text="Dates shown on UCAS",
+            closing_date="Varies",
+            url=ucas_open_days_link(),
+            source="UCAS",
+            year_group="Year 12 & 13",
+            subject="All subjects",
+            verified=True
+        ),
+
+        make_opportunity(
+            title="UCAS University Open Days Guide",
+            organisation="UCAS",
+            category="🏫 University Open Days",
+            description=(
+                "UCAS guidance explaining what happens at "
+                "open days and how students can use them "
+                "when choosing where to study."
+            ),
+            location="UK",
+            date_text="Guidance",
+            closing_date="N/A",
+            url=(
+                "https://www.ucas.com/applying/"
+                "before-you-apply/what-and-where-to-study/"
+                "university-open-days"
+            ),
+            source="UCAS",
+            year_group="All KS5",
+            subject="All subjects",
+            verified=True
+        )
+    ]
+
+
+# ============================================================
+# AMAZING APPRENTICESHIPS
+# ============================================================
+
+def get_amazing_apprenticeships():
+
+    return [
+
+        make_opportunity(
+            title="Higher & Degree Apprenticeship Vacancy Listing",
+            organisation="Amazing Apprenticeships",
+            category="🎓 Apprenticeship",
+            description=(
+                "A specialist listing of higher and degree "
+                "apprenticeship vacancies from employers. "
+                "Particularly useful for Year 13 students "
+                "considering degree-level apprenticeships."
+            ),
+            location="UK",
+            date_text="Current listings",
+            closing_date="Check individual vacancy",
+            url=(
+                "https://www.amazingapprenticeships.com/"
+                "higher-degree-listing/"
+            ),
+            source="Amazing Apprenticeships",
+            year_group="Year 13",
+            subject="All subjects",
+            verified=True
+        ),
+
+        make_opportunity(
+            title="Apprenticeship Resources",
+            organisation="Amazing Apprenticeships",
+            category="📚 Resource",
+            description=(
+                "Student-friendly resources covering "
+                "apprenticeships, employers, careers, "
+                "application guidance and progression."
+            ),
+            location="Online",
+            date_text="Available now",
+            closing_date="N/A",
+            url=(
+                "https://www.amazingapprenticeships.com/"
+                "resources/"
+            ),
+            source="Amazing Apprenticeships",
+            year_group="All KS5",
+            subject="All subjects",
+            verified=True
+        )
+    ]
+
+
+# ============================================================
+# OTHER VERIFIED RESOURCES
+# ============================================================
+
+def get_resources():
+
+    return [
+
+        make_opportunity(
+            title="UCAS Discover",
+            organisation="UCAS",
+            category="📚 Resource",
+            description=(
+                "Explore university subjects, careers, "
+                "apprenticeships and progression options."
+            ),
+            location="Online",
+            date_text="Available now",
+            closing_date="N/A",
+            url="https://www.ucas.com/discover",
+            source="UCAS",
+            year_group="All KS5",
+            subject="All subjects",
+            verified=True
+        ),
+
+        make_opportunity(
+            title="UCAS Apprenticeships",
+            organisation="UCAS",
+            category="📚 Resource",
+            description=(
+                "Information about apprenticeships, "
+                "including degree apprenticeships and "
+                "how to search for opportunities."
+            ),
+            location="Online",
+            date_text="Available now",
+            closing_date="N/A",
+            url="https://www.ucas.com/apprenticeships",
+            source="UCAS",
+            year_group="All KS5",
+            subject="All subjects",
+            verified=True
+        ),
+
+        make_opportunity(
+            title="Find an Apprenticeship",
+            organisation="GOV.UK",
+            category="🎓 Apprenticeship",
+            description=(
+                "Official Government apprenticeship vacancy "
+                "search. Students can search and apply for "
+                "live apprenticeship vacancies."
+            ),
+            location="UK",
+            date_text="Live vacancies",
+            closing_date="Varies",
+            url=(
+                "https://www.gov.uk/apply-apprenticeship"
+            ),
+            source="GOV.UK",
+            year_group="All KS5",
+            subject="All subjects",
+            verified=True
+        )
+    ]
+
+
+# ============================================================
+# WORK EXPERIENCE
+# ============================================================
+
+def get_work_experience():
+
+    return [
+
+        make_opportunity(
+            title="Work Experience – Find Local Opportunities",
+            organisation="GOV.UK",
+            category="💼 Work Experience",
+            description=(
+                "Use the Government careers service to "
+                "explore careers, employers and routes into "
+                "different sectors. Check individual "
+                "employers for current work experience "
+                "availability."
+            ),
+            location="UK",
+            date_text="Check employer availability",
+            closing_date="Varies",
+            url=(
+                "https://nationalcareers.service.gov.uk/"
+            ),
+            source="National Careers Service",
+            year_group="All KS5",
+            subject="All subjects",
+            verified=True
+        )
+    ]
+
+
+# ============================================================
+# FILTERING
+# ============================================================
+
+def filter_opportunities(
+    opportunities,
+    category,
+    subject,
+    year_group,
+    location
+):
+
+    filtered = []
+
+    for item in opportunities:
+
+        if category != "All opportunities":
+            if item["category"] != category:
+                continue
+
+        if subject != "All subjects":
+
+            if (
+                item["subject"] != "All subjects"
+                and item["subject"] != subject
+            ):
+                continue
+
+        if year_group != "All KS5":
+
+            if (
+                item["year_group"] != "All KS5"
+                and year_group not in item["year_group"]
+            ):
+                continue
+
+        if location != "All locations":
+
+            item_location = item["location"].lower()
+
+            if location.lower() not in item_location:
+                continue
+
+        filtered.append(item)
+
+    return filtered
+
+
+# ============================================================
+# REMOVE DUPLICATES
+# ============================================================
+
+def remove_duplicates(items):
+
+    seen = set()
+    result = []
+
+    for item in items:
+
+        key = (
+            item["title"].lower(),
+            item["organisation"].lower(),
+            item["url"]
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        result.append(item)
+
+    return result
+
+
+# ============================================================
+# DISPLAY OPPORTUNITY
+# ============================================================
+
+def display_opportunity(item, index):
+
+    st.markdown(
+        f"""
+        <div class="card">
+
+        <span class="badge">{item["category"]}</span>
+
+        <h3>{html.escape(item["title"])}</h3>
+
+        <strong>
+        {html.escape(item["organisation"])}
+        </strong>
+
+        <p>
+        {html.escape(item["description"])}
+        </p>
+
+        <p>
+        📍 {html.escape(item["location"])}
+        </p>
+
+        <p>
+        📅 {html.escape(item["date"])}
+        </p>
+
+        <p>
+        ⏰ Closing: {html.escape(item["closing_date"])}
+        </p>
+
+        <p class="source">
+        Source: {html.escape(item["source"])}
+        {" • ✓ Verified source" if item["verified"] else ""}
+        </p>
+
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    col1, col2 = st.columns([1, 5])
+
+    with col1:
+
+        if item["url"]:
+
+            st.link_button(
+                "Open opportunity",
+                item["url"]
+            )
+
+    with col2:
+
+        if st.button(
+            "🗑️ Remove",
+            key=f"remove_{index}_{item['id']}"
+        ):
+
+            st.session_state.opportunities = [
+                x for x in st.session_state.opportunities
+                if x["id"] != item["id"]
+            ]
+
+            st.rerun()
+
+
+# ============================================================
+# BULLETIN GENERATOR
+# ============================================================
+
+def create_bulletin(items):
+
+    today_text = TODAY.strftime("%d %B %Y")
+
+    lines = []
+
+    lines.append("🎓 KS5 PROGRESSION BULLETIN")
+    lines.append("")
+    lines.append(
+        f"Week commencing {today_text}"
+    )
+    lines.append("")
+    lines.append(
+        "Here are this week's opportunities, "
+        "events and resources for KS5 students."
+    )
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    categories = [
+        "🎓 Apprenticeship",
+        "🏫 University Open Days",
+        "💼 Work Experience",
+        "🌟 Other Opportunity",
+        "📚 Resource"
+    ]
+
+    for category in categories:
+
+        category_items = [
+            x for x in items
+            if x["category"] == category
+        ]
+
+        if not category_items:
+            continue
+
+        lines.append(category.upper())
+        lines.append("")
+
+        for item in category_items:
+
+            lines.append(
+                f"🔹 {item['title']}"
+            )
+
+            if item["organisation"]:
+                lines.append(
+                    f"Organisation: {item['organisation']}"
+                )
+
+            if item["date"]:
+                lines.append(
+                    f"📅 {item['date']}"
+                )
+
+            if item["closing_date"]:
+                lines.append(
+                    f"⏰ Closing: {item['closing_date']}"
+                )
+
+            if item["location"]:
+                lines.append(
+                    f"📍 {item['location']}"
+                )
+
+            if item["description"]:
+                lines.append(
+                    item["description"]
+                )
+
+            if item["url"]:
+                lines.append(
+                    f"🔗 {item['url']}"
+                )
+
+            lines.append("")
+
+        lines.append(
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+        lines.append("")
+
+    lines.append(
+        "💡 Don't leave it until the deadline. "
+        "Check the opportunity details carefully "
+        "before applying."
+    )
+
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -607,746 +875,390 @@ def search_adzuna(
 
 with st.sidebar:
 
-    st.header("🔎 Find opportunities")
+    st.header("🔎 Bulletin filters")
 
-    search_type = st.selectbox(
+    selected_category = st.selectbox(
         "Opportunity type",
-        list(SEARCHES.keys()),
+        [
+            "All opportunities",
+            "🎓 Apprenticeship",
+            "🏫 University Open Days",
+            "💼 Work Experience",
+            "🌟 Other Opportunity",
+            "📚 Resource"
+        ]
     )
 
-    custom_search = st.text_input(
-        "Specific job/career",
-        placeholder="e.g. engineering",
+    selected_subject = st.selectbox(
+        "Subject / career area",
+        CAREER_AREAS
     )
 
-    location = st.text_input(
+    selected_year = st.selectbox(
+        "Year group",
+        YEAR_GROUPS
+    )
+
+    selected_location = st.selectbox(
         "Location",
-        placeholder="e.g. Liverpool",
-    )
-
-    career_area = st.selectbox(
-        "Career area",
-        ["All"] + POPULAR_CAREERS,
+        LOCATIONS
     )
 
     st.divider()
 
-    early_career_only = st.checkbox(
-        "🎓 Student-friendly roles only",
-        value=True,
-    )
+    st.subheader("🔄 Refresh")
 
-    remote_only = st.checkbox(
-        "🏠 Remote opportunities only",
-        value=False,
-    )
+    if st.button(
+        "Find latest opportunities",
+        use_container_width=True
+    ):
 
-    st.divider()
+        with st.spinner(
+            "Searching progression sources..."
+        ):
 
-    results_limit = st.slider(
-        "Number of jobs to retrieve",
-        10,
-        50,
-        30,
-        10,
-    )
+            all_items = []
 
-    st.divider()
+            # Apprenticeships
+            all_items.extend(
+                search_adzuna_apprenticeships(
+                    subject=selected_subject,
+                    location=selected_location
+                )
+            )
 
-    refresh = st.button(
-        "🔄 Refresh live opportunities",
-        use_container_width=True,
-    )
+            # UCAS
+            all_items.extend(
+                get_ucas_opportunities()
+            )
 
-    st.caption(
-        "Live vacancy data supplied by Adzuna."
-    )
+            # Amazing Apprenticeships
+            all_items.extend(
+                get_amazing_apprenticeships()
+            )
 
+            # Work experience
+            all_items.extend(
+                get_work_experience()
+            )
 
-# ============================================================
-# CHECK API
-# ============================================================
+            # Resources
+            all_items.extend(
+                get_resources()
+            )
 
-if not APP_ID or not APP_KEY:
+            st.session_state.opportunities = (
+                remove_duplicates(all_items)
+            )
 
-    st.error(
-        "⚠️ Adzuna API credentials haven't been configured."
-    )
+            st.session_state.last_refresh = (
+                datetime.now().strftime(
+                    "%d %B %Y %H:%M"
+                )
+            )
 
-    st.markdown(
-        """
-        ### Add your Adzuna credentials
-
-        In Streamlit Cloud go to:
-
-        **Manage app → Settings → Secrets**
-
-        Add:
-
-        ```toml
-        ADZUNA_APP_ID = "YOUR_APPLICATION_ID"
-        ADZUNA_APP_KEY = "YOUR_APPLICATION_KEY"
-        ```
-
-        Never put your Application Key directly into this Python file.
-        """
-    )
-
-    st.stop()
+        st.success("Progression sources refreshed.")
 
 
 # ============================================================
-# BUILD SEARCH
+# HERO
 # ============================================================
 
-if custom_search.strip():
+st.markdown(
+    """
+    <div class="hero">
 
-    search_term = custom_search.strip()
+    <h1>🎓 KS5 Progression Hub</h1>
+
+    <p>
+    Your weekly source of apprenticeships,
+    university open days, work experience,
+    progression opportunities and useful resources.
+    </p>
+
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ============================================================
+# FIRST LOAD
+# ============================================================
+
+if not st.session_state.opportunities:
+
+    st.info(
+        "👈 Choose your filters and click "
+        "**Find latest opportunities** to build "
+        "this week's progression bulletin."
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "🎓 Apprenticeships",
+            "Live"
+        )
+
+    with col2:
+        st.metric(
+            "🏫 Open Days",
+            "UCAS"
+        )
+
+    with col3:
+        st.metric(
+            "💼 Work Experience",
+            "Opportunities"
+        )
 
 else:
 
-    search_term = SEARCHES[search_type]
+    # ========================================================
+    # FILTER CURRENT RESULTS
+    # ========================================================
 
+    filtered = filter_opportunities(
+        st.session_state.opportunities,
+        selected_category,
+        selected_subject,
+        selected_year,
+        selected_location
+    )
 
-if career_area != "All":
+    # ========================================================
+    # DASHBOARD METRICS
+    # ========================================================
 
-    if search_term:
+    apprenticeships = sum(
+        1 for x in filtered
+        if x["category"] == "🎓 Apprenticeship"
+    )
 
-        search_term = (
-            f"{search_term} {career_area}"
+    open_days = sum(
+        1 for x in filtered
+        if x["category"] == "🏫 University Open Days"
+    )
+
+    work_experience = sum(
+        1 for x in filtered
+        if x["category"] == "💼 Work Experience"
+    )
+
+    resources = sum(
+        1 for x in filtered
+        if x["category"] == "📚 Resource"
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "🎓 Apprenticeships",
+            apprenticeships
         )
 
-    else:
-
-        search_term = career_area
-
-
-# ============================================================
-# IMPROVE "ALL" SEARCH
-# ============================================================
-
-# When the user chooses "All suitable opportunities", we need
-# some search terms. Otherwise Adzuna can return completely
-# general jobs such as managers and chefs.
-
-if early_career_only and not search_term:
-
-    search_term = (
-        "apprentice OR trainee OR junior "
-        "OR school leaver OR entry level"
-    )
-
-
-# ============================================================
-# LOAD
-# ============================================================
-
-if refresh:
-
-    st.cache_data.clear()
-
-with st.spinner(
-    "🔎 Finding live opportunities..."
-):
-
-    result = search_adzuna(
-        APP_ID,
-        APP_KEY,
-        what=search_term,
-        where=location.strip(),
-        results_per_page=results_limit,
-    )
-
-
-# ============================================================
-# ERROR
-# ============================================================
-
-if not result["success"]:
-
-    st.error(
-        "Unable to retrieve live Adzuna opportunities."
-    )
-
-    st.code(result["error"])
-
-    st.stop()
-
-
-jobs = deduplicate_jobs(
-    result["jobs"]
-)
-
-
-# ============================================================
-# SCORE JOBS
-# ============================================================
-
-scored_jobs = []
-
-for job in jobs:
-
-    assessment = assess_student_suitability(
-        job
-    )
-
-    job["_assessment"] = assessment
-
-    if not early_career_only:
-
-        assessment["include"] = True
-
-    if assessment["include"]:
-
-        scored_jobs.append(job)
-
-
-# Sort best student matches first.
-scored_jobs.sort(
-    key=lambda x: x["_assessment"]["score"],
-    reverse=True,
-)
-
-
-# Remote filtering
-if remote_only:
-
-    remote_jobs = []
-
-    for job in scored_jobs:
-
-        text = (
-            get_title(job)
-            + " "
-            + clean_text(
-                job.get("description", "")
-            )
-        ).lower()
-
-        if "remote" in text:
-
-            remote_jobs.append(job)
-
-    scored_jobs = remote_jobs
-
-
-jobs = scored_jobs
-
-
-# ============================================================
-# TOP HEADER STATS
-# ============================================================
-
-st.subheader("📊 Opportunity snapshot")
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-
-    st.metric(
-        "Suitable opportunities",
-        len(jobs),
-    )
-
-with col2:
-
-    apprenticeship_count = sum(
-        1
-        for job in jobs
-        if "apprent" in (
-            get_title(job)
-            + " "
-            + clean_text(
-                job.get("description", "")
-            )
-        ).lower()
-    )
-
-    st.metric(
-        "Apprenticeships",
-        apprenticeship_count,
-    )
-
-with col3:
-
-    trainee_count = sum(
-        1
-        for job in jobs
-        if "trainee" in (
-            get_title(job)
-            + " "
-            + clean_text(
-                job.get("description", "")
-            )
-        ).lower()
-    )
-
-    st.metric(
-        "Trainee roles",
-        trainee_count,
-    )
-
-with col4:
-
-    salaries = [
-        job.get("salary_max")
-        for job in jobs
-        if job.get("salary_max")
-    ]
-
-    if salaries:
-
-        average_salary = int(
-            sum(salaries) / len(salaries)
+    with col2:
+        st.metric(
+            "🏫 Open Days",
+            open_days
         )
 
-        salary_display = (
-            f"£{average_salary:,}"
+    with col3:
+        st.metric(
+            "💼 Work Experience",
+            work_experience
         )
 
-    else:
+    with col4:
+        st.metric(
+            "📚 Resources",
+            resources
+        )
 
-        salary_display = "—"
+    if st.session_state.last_refresh:
 
-    st.metric(
-        "Avg. advertised salary",
-        salary_display,
+        st.caption(
+            f"Last refreshed: "
+            f"{st.session_state.last_refresh}"
+        )
+
+    # ========================================================
+    # TABS
+    # ========================================================
+
+    tab1, tab2, tab3 = st.tabs(
+        [
+            "🔎 Opportunities",
+            "📢 Teams Bulletin",
+            "✍️ Add Opportunity"
+        ]
     )
 
+    # ========================================================
+    # OPPORTUNITIES
+    # ========================================================
+
+    with tab1:
+
+        st.subheader(
+            f"{len(filtered)} progression items"
+        )
+
+        if not filtered:
+
+            st.warning(
+                "No opportunities match these filters. "
+                "Try broadening your search."
+            )
+
+        else:
+
+            for index, item in enumerate(filtered):
+
+                display_opportunity(
+                    item,
+                    index
+                )
+
+    # ========================================================
+    # TEAMS BULLETIN
+    # ========================================================
+
+    with tab2:
+
+        st.subheader(
+            "📢 Microsoft Teams Bulletin"
+        )
+
+        bulletin = create_bulletin(
+            filtered
+        )
+
+        st.markdown(
+            "Copy the bulletin below directly into "
+            "Microsoft Teams."
+        )
+
+        st.text_area(
+            "Teams-ready bulletin",
+            bulletin,
+            height=650
+        )
+
+        st.download_button(
+            "📥 Download bulletin",
+            bulletin,
+            file_name=(
+                f"KS5_Progression_Bulletin_"
+                f"{TODAY.strftime('%Y-%m-%d')}.txt"
+            ),
+            mime="text/plain"
+        )
+
+    # ========================================================
+    # ADD OWN OPPORTUNITY
+    # ========================================================
+
+    with tab3:
+
+        st.subheader(
+            "✍️ Add your own opportunity"
+        )
+
+        with st.form(
+            "custom_opportunity"
+        ):
+
+            custom_title = st.text_input(
+                "Opportunity title"
+            )
+
+            custom_org = st.text_input(
+                "Organisation"
+            )
+
+            custom_category = st.selectbox(
+                "Category",
+                [
+                    "🎓 Apprenticeship",
+                    "🏫 University Open Days",
+                    "💼 Work Experience",
+                    "🌟 Other Opportunity",
+                    "📚 Resource"
+                ]
+            )
+
+            custom_description = st.text_area(
+                "Description"
+            )
+
+            custom_date = st.text_input(
+                "Date / availability"
+            )
+
+            custom_deadline = st.text_input(
+                "Closing date"
+            )
+
+            custom_location = st.text_input(
+                "Location"
+            )
+
+            custom_url = st.text_input(
+                "Link"
+            )
+
+            submitted = st.form_submit_button(
+                "➕ Add to bulletin"
+            )
+
+            if submitted:
+
+                if not custom_title:
+
+                    st.error(
+                        "Please enter an opportunity title."
+                    )
+
+                else:
+
+                    new_item = make_opportunity(
+                        title=custom_title,
+                        organisation=custom_org,
+                        category=custom_category,
+                        description=custom_description,
+                        location=custom_location,
+                        date_text=custom_date,
+                        closing_date=custom_deadline,
+                        url=custom_url,
+                        source="College added",
+                        year_group="All KS5",
+                        subject="All subjects",
+                        verified=False
+                    )
+
+                    st.session_state.opportunities.append(
+                        new_item
+                    )
+
+                    st.success(
+                        "Opportunity added to the bulletin."
+                    )
+
+                    st.rerun()
+
+
+# ============================================================
+# FOOTER
+# ============================================================
 
 st.divider()
 
-
-# ============================================================
-# TABS
-# ============================================================
-
-tab_jobs, tab_bulletin, tab_info = st.tabs(
-    [
-        "💼 Opportunities",
-        "📢 Teams Bulletin",
-        "ℹ️ About",
-    ]
+st.caption(
+    "🎓 KS5 Progression Hub • "
+    "Designed for sixth-form progression teams • "
+    "Always check the original source before applying."
 )
-
-
-# ============================================================
-# JOB RESULTS
-# ============================================================
-
-with tab_jobs:
-
-    st.subheader(
-        "💼 Live opportunities"
-    )
-
-    if not jobs:
-
-        st.warning(
-            """
-            No suitable student opportunities were found.
-
-            Try:
-            - a broader location
-            - another career area
-            - a different opportunity type
-            - switching off "Student-friendly roles only"
-            """
-        )
-
-    else:
-
-        st.caption(
-            f"{len(jobs)} suitable opportunities "
-            "found from the current Adzuna results."
-        )
-
-        for number, job in enumerate(
-            jobs,
-            start=1,
-        ):
-
-            title = get_title(job)
-            company = get_company(job)
-            location_name = get_location(job)
-            category = get_category(job)
-            salary = format_salary(job)
-            contract = format_contract(job)
-            listed = format_created_date(job)
-
-            description = truncate(
-                job.get("description", ""),
-                350,
-            )
-
-            url = job.get(
-                "redirect_url"
-            )
-
-            assessment = job[
-                "_assessment"
-            ]
-
-            with st.container(
-                border=True
-            ):
-
-                # --------------------------------------------
-                # TITLE
-                # --------------------------------------------
-
-                st.markdown(
-                    f"### {number}. {title}"
-                )
-
-                st.caption(
-                    f"🏢 {company}"
-                )
-
-                # --------------------------------------------
-                # SUITABILITY
-                # --------------------------------------------
-
-                st.success(
-                    f"{assessment['colour']} "
-                    f"{assessment['label']} "
-                    f"— {assessment['score']}/100"
-                )
-
-                # --------------------------------------------
-                # INFORMATION
-                # --------------------------------------------
-
-                info1, info2 = st.columns(2)
-
-                with info1:
-
-                    st.write(
-                        f"📍 **Location:** {location_name}"
-                    )
-
-                    st.write(
-                        f"💷 **Salary:** {salary}"
-                    )
-
-                    st.write(
-                        f"📋 **Type:** {contract}"
-                    )
-
-                with info2:
-
-                    st.write(
-                        f"📚 **Area:** {category}"
-                    )
-
-                    st.write(
-                        f"🕐 **Listed:** {listed}"
-                    )
-
-                    if assessment["reasons"]:
-
-                        st.write(
-                            "**Why it may suit students:**"
-                        )
-
-                        for reason in assessment[
-                            "reasons"
-                        ][:3]:
-
-                            st.write(
-                                f"• {reason}"
-                            )
-
-                # --------------------------------------------
-                # DESCRIPTION
-                # --------------------------------------------
-
-                if description:
-
-                    st.write(
-                        description
-                    )
-
-                # --------------------------------------------
-                # APPLY
-                # --------------------------------------------
-
-                if url:
-
-                    st.link_button(
-                        "🔗 View full vacancy / apply",
-                        url,
-                        use_container_width=True,
-                    )
-
-                st.caption(
-                    "Jobs by Adzuna • "
-                    "Always check the original vacancy "
-                    "before applying."
-                )
-
-
-# ============================================================
-# BULLETIN
-# ============================================================
-
-def create_bulletin(
-    jobs,
-    search_description,
-):
-
-    today = datetime.now().strftime(
-        "%d %B %Y"
-    )
-
-    lines = []
-
-    lines.append(
-        "🎓 KS5 PROGRESSION BULLETIN"
-    )
-
-    lines.append(
-        f"📅 Updated: {today}"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "🚀 THIS WEEK'S LIVE OPPORTUNITIES"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "Looking for your next step after sixth form?"
-    )
-
-    lines.append(
-        "Here are some current opportunities to explore."
-    )
-
-    lines.append("")
-
-    if search_description:
-
-        lines.append(
-            f"🔎 Focus: {search_description}"
-        )
-
-        lines.append("")
-
-    if not jobs:
-
-        lines.append(
-            "No suitable opportunities were found "
-            "in this search."
-        )
-
-    else:
-
-        # Only the strongest 10 go into the bulletin.
-
-        for number, job in enumerate(
-            jobs[:10],
-            start=1,
-        ):
-
-            title = get_title(job)
-            company = get_company(job)
-            location_name = get_location(job)
-            salary = format_salary(job)
-            contract = format_contract(job)
-            url = job.get(
-                "redirect_url",
-                "",
-            )
-
-            assessment = job[
-                "_assessment"
-            ]
-
-            lines.append(
-                f"{number}. {title}"
-            )
-
-            lines.append(
-                f"🏢 {company}"
-            )
-
-            lines.append(
-                f"📍 {location_name}"
-            )
-
-            lines.append(
-                f"💷 {salary}"
-            )
-
-            lines.append(
-                f"📋 {contract}"
-            )
-
-            lines.append(
-                f"⭐ {assessment['label']}"
-            )
-
-            if url:
-
-                lines.append(
-                    f"🔗 {url}"
-                )
-
-            lines.append("")
-
-    lines.append(
-        "────────────────────────"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "💡 BEFORE YOU APPLY"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "Always read the full vacancy carefully and "
-        "check the entry requirements, salary, location "
-        "and application information."
-    )
-
-    lines.append("")
-
-    lines.append(
-        "Need help with your next step, CV, application "
-        "or interview? Speak to the sixth-form "
-        "progression/careers team."
-    )
-
-    lines.append("")
-
-    lines.append(
-        "Jobs by Adzuna"
-    )
-
-    return "\n".join(lines)
-
-
-with tab_bulletin:
-
-    st.subheader(
-        "📢 Teams Bulletin Generator"
-    )
-
-    st.write(
-        """
-        The box below contains a ready-to-copy bulletin
-        for your Microsoft Teams page.
-        """
-    )
-
-    bulletin = create_bulletin(
-        jobs,
-        search_term
-        if search_term
-        else "All suitable opportunities",
-    )
-
-    st.text_area(
-        "📋 Copy this into Microsoft Teams",
-        bulletin,
-        height=650,
-    )
-
-    st.download_button(
-        "⬇️ Download bulletin",
-        data=bulletin,
-        file_name=(
-            "KS5_Progression_Bulletin.txt"
-        ),
-        mime="text/plain",
-        use_container_width=True,
-    )
-
-    st.divider()
-
-    st.subheader(
-        "📣 Suggested introduction"
-    )
-
-    st.info(
-        """
-        🚀 **This week's progression opportunities are here!**
-
-        Thinking about university, an apprenticeship,
-        employment or another route after sixth form?
-
-        Take a look at this week's opportunities and
-        don't leave applications until the last minute.
-
-        If you're unsure which route is right for you,
-        speak to the sixth-form progression team.
-        """
-    )
-
-
-# ============================================================
-# ABOUT
-# ============================================================
-
-with tab_info:
-
-    st.subheader(
-        "ℹ️ About the KS5 Progression Hub"
-    )
-
-    st.write(
-        """
-        The KS5 Progression Hub is designed to help
-        sixth-form students find genuine, current
-        opportunities.
-
-        Rather than using a static list of jobs, the
-        application retrieves current vacancies from
-        Adzuna when searches are performed.
-        """
-    )
-
-    st.markdown(
-        """
-        ### Current source
-
-        **💼 Adzuna**
-
-        Used for current UK employment opportunities.
-
-        ### Planned future sources
-
-        **🎓 Government apprenticeship vacancies**
-
-        We can add the official apprenticeship API once
-        the access issue is resolved.
-
-        **⭐ Amazing Apprenticeships**
-
-        We can add their resources, guides and relevant
-        apprenticeship information.
-
-        **🏫 University opportunities**
-
-        We can later add university open days and other
-        events using verified university sources.
-
-        ### Important
-
-        This application does **not** invent vacancies,
-        salaries or application links.
-
-        Students should always check the original vacancy
-        before applying.
-        """
-    )
-
-    st.caption(
-        "Jobs by Adzuna"
-    )
