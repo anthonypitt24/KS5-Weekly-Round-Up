@@ -1,10 +1,28 @@
+# ============================================================
+# KS5 PROGRESSION HUB
+# Weekly progression intelligence for sixth-form students
+#
+# Designed for:
+# - Weekly Microsoft Teams bulletin
+# - North West university open days
+# - Degree / Higher Apprenticeships
+# - Live progression opportunities
+# - College-created activities and events
+# - One practical weekly student action
+#
+# No Government Apprenticeship API key required.
+# ============================================================
+
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from datetime import date, datetime, timedelta
-from urllib.parse import urljoin
+from datetime import datetime, date, timedelta
 import re
 import html
+import hashlib
+import json
+import os
+from urllib.parse import quote, urljoin, urlparse
 
 
 # ============================================================
@@ -15,7 +33,6 @@ st.set_page_config(
     page_title="KS5 Progression Hub",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
 
@@ -25,53 +42,279 @@ st.set_page_config(
 
 TODAY = date.today()
 
-HEADERS = {
+DATA_FILE = "ks5_progression_custom.json"
+
+REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/139.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/139 Safari/537.36"
     )
 }
 
-TIMEOUT = 25
 
-UCAS_EVENTS_URL = (
-    "https://www.ucas.com/explore/search/events"
-)
+# ============================================================
+# NORTH WEST UNIVERSITY WATCHLIST
+# ============================================================
 
-UCAS_DEADLINES_URL = (
-    "https://www.ucas.com/discover/advice-for-parents-"
-    "guardians-and-carers/key-dates-and-the-application-journey"
-)
+NORTH_WEST_UNIVERSITIES = {
+    "University of Liverpool": {
+        "city": "Liverpool",
+        "domain": "liverpool.ac.uk",
+    },
+    "Liverpool John Moores University": {
+        "city": "Liverpool",
+        "domain": "ljmu.ac.uk",
+    },
+    "Liverpool Hope University": {
+        "city": "Liverpool",
+        "domain": "hope.ac.uk",
+    },
+    "Edge Hill University": {
+        "city": "Ormskirk",
+        "domain": "edgehill.ac.uk",
+    },
+    "University of Chester": {
+        "city": "Chester",
+        "domain": "chester.ac.uk",
+    },
+    "University of Manchester": {
+        "city": "Manchester",
+        "domain": "manchester.ac.uk",
+    },
+    "Manchester Metropolitan University": {
+        "city": "Manchester",
+        "domain": "mmu.ac.uk",
+    },
+    "University of Salford": {
+        "city": "Salford",
+        "domain": "salford.ac.uk",
+    },
+    "University of Bolton": {
+        "city": "Bolton",
+        "domain": "bolton.ac.uk",
+    },
+    "University of Central Lancashire": {
+        "city": "Preston",
+        "domain": "uclan.ac.uk",
+    },
+    "Lancaster University": {
+        "city": "Lancaster",
+        "domain": "lancaster.ac.uk",
+    },
+    "University of Cumbria": {
+        "city": "Carlisle",
+        "domain": "cumbria.ac.uk",
+    },
+    "Liverpool Institute for Performing Arts": {
+        "city": "Liverpool",
+        "domain": "lipa.ac.uk",
+    },
+}
 
-GOV_APPRENTICESHIP_URL = (
-    "https://www.findapprenticeship.service.gov.uk/apprenticeships"
-)
 
-AMAZING_LISTING_URL = (
-    "https://www.amazingapprenticeships.com/"
-    "higher-degree-listing/"
-)
+# ============================================================
+# CAREER KEYWORDS
+# ============================================================
 
-AMAZING_RESOURCES_URL = (
-    "https://www.amazingapprenticeships.com/resources/"
-)
+CAREER_KEYWORDS = {
+    "All categories": [],
 
-UCAS_APPRENTICESHIPS_URL = (
-    "https://www.ucas.com/apprenticeships"
-)
+    "Digital & Technology": [
+        "digital",
+        "software",
+        "computing",
+        "computer",
+        "cyber",
+        "technology",
+        "data",
+        "artificial intelligence",
+        "ai",
+        "programming",
+        "developer",
+        "it",
+    ],
 
-UCAS_DISCOVER_URL = (
-    "https://www.ucas.com/discover"
-)
+    "Engineering": [
+        "engineering",
+        "engineer",
+        "mechanical",
+        "electrical",
+        "civil",
+        "aerospace",
+        "manufacturing",
+        "automotive",
+        "design engineer",
+    ],
 
-FORAGE_URL = (
-    "https://www.theforage.com/simulations"
-)
+    "Business & Administration": [
+        "business",
+        "management",
+        "administration",
+        "operations",
+        "project management",
+        "marketing",
+        "human resources",
+        "hr",
+    ],
 
-NCS_URL = (
-    "https://nationalcareers.service.gov.uk/"
-)
+    "Finance & Legal": [
+        "finance",
+        "accounting",
+        "accountancy",
+        "banking",
+        "economics",
+        "tax",
+        "audit",
+        "legal",
+        "law",
+    ],
+
+    "Health & Science": [
+        "health",
+        "healthcare",
+        "nursing",
+        "science",
+        "laboratory",
+        "pharmacy",
+        "medicine",
+        "clinical",
+        "biomedical",
+    ],
+
+    "Creative & Media": [
+        "creative",
+        "media",
+        "film",
+        "television",
+        "design",
+        "graphic",
+        "journalism",
+        "music",
+        "performing arts",
+        "advertising",
+    ],
+
+    "Construction": [
+        "construction",
+        "quantity surveying",
+        "building",
+        "property",
+        "architecture",
+        "surveying",
+    ],
+
+    "Education": [
+        "education",
+        "teaching",
+        "teacher",
+        "early years",
+        "childcare",
+    ],
+}
+
+
+# ============================================================
+# WEEKLY ACTIONS
+# ============================================================
+
+WEEKLY_ACTIONS = [
+    {
+        "title": "🔎 Career Research",
+        "text": (
+            "Choose one career you're considering and spend 20 minutes "
+            "finding out what qualifications, skills and routes are needed."
+        ),
+        "target": "Write down 3 things you have learned.",
+    },
+    {
+        "title": "📄 Build Your CV",
+        "text": (
+            "Create your first CV or improve your existing one. "
+            "Include your education, experience, achievements and skills."
+        ),
+        "target": "Finish one section of your CV.",
+    },
+    {
+        "title": "🎓 Compare University Courses",
+        "text": (
+            "Choose one subject you might study and compare three "
+            "university courses. Look at entry requirements and modules."
+        ),
+        "target": "Write down your favourite course and why.",
+    },
+    {
+        "title": "🎓 Explore Degree Apprenticeships",
+        "text": (
+            "Find three degree apprenticeship routes linked to careers "
+            "you are interested in."
+        ),
+        "target": "Save three opportunities and check their entry requirements.",
+    },
+    {
+        "title": "💼 Find Work Experience",
+        "text": (
+            "Search for one work-experience, volunteering or employer "
+            "opportunity connected to an area you might pursue."
+        ),
+        "target": "Identify one opportunity you could apply for.",
+    },
+    {
+        "title": "🧠 Skills Audit",
+        "text": (
+            "Think about the career or course you want. Identify the "
+            "skills employers or universities are looking for."
+        ),
+        "target": "Choose one skill you can develop this term.",
+    },
+    {
+        "title": "✍️ Personal Statement",
+        "text": (
+            "Write 100–150 words explaining why you are interested in "
+            "your chosen subject or career."
+        ),
+        "target": "Save your first draft.",
+    },
+    {
+        "title": "🏫 Book an Open Day",
+        "text": (
+            "Find an upcoming university open day and investigate whether "
+            "it is worth attending."
+        ),
+        "target": "Book one open day or add it to your calendar.",
+    },
+    {
+        "title": "🏢 Research Employers",
+        "text": (
+            "Choose three employers you might like to work for and "
+            "investigate their graduate or apprenticeship routes."
+        ),
+        "target": "Save three employer websites.",
+    },
+    {
+        "title": "🎤 Interview Practice",
+        "text": (
+            "Practise answering five common interview questions, "
+            "using examples from school, college, work or your interests."
+        ),
+        "target": "Record or write your strongest answer.",
+    },
+    {
+        "title": "🌐 Improve Your Profile",
+        "text": (
+            "Review your online professional profile or create one. "
+            "Make sure your skills, interests and achievements are clear."
+        ),
+        "target": "Add one achievement or skill.",
+    },
+    {
+        "title": "📚 Super-Curricular Learning",
+        "text": (
+            "Spend 30 minutes learning something beyond your normal "
+            "lessons in a subject you might study."
+        ),
+        "target": "Record what you learned and one question it raised.",
+    },
+]
 
 
 # ============================================================
@@ -81,17 +324,59 @@ NCS_URL = (
 if "items" not in st.session_state:
     st.session_state.items = []
 
-if "removed" not in st.session_state:
-    st.session_state.removed = set()
-
 if "custom_items" not in st.session_state:
     st.session_state.custom_items = []
 
 if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = None
+    st.session_state.last_refresh = ""
 
 if "source_status" not in st.session_state:
     st.session_state.source_status = {}
+
+if "removed" not in st.session_state:
+    st.session_state.removed = set()
+
+
+# ============================================================
+# CUSTOM DATA STORAGE
+# ============================================================
+
+def load_custom_items():
+    """Load college-created activities/events from JSON."""
+
+    if not os.path.exists(DATA_FILE):
+        return []
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, list):
+            return data
+
+    except Exception:
+        pass
+
+    return []
+
+
+def save_custom_items(items):
+    """Save college-created activities/events."""
+
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                items,
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
+    except Exception:
+        pass
+
+
+if not st.session_state.custom_items:
+    st.session_state.custom_items = load_custom_items()
 
 
 # ============================================================
@@ -102,113 +387,73 @@ st.markdown(
     """
 <style>
 
-.main-title {
-    font-size: 44px;
-    font-weight: 800;
-    margin-bottom: 4px;
-}
-
-.subtitle {
-    font-size: 19px;
-    color: #6b7280;
-    margin-bottom: 20px;
-}
-
 .hero {
-    padding: 30px;
-    border-radius: 24px;
-    color: white;
+    padding: 2rem;
+    border-radius: 18px;
+    margin-bottom: 1.5rem;
     background: linear-gradient(
         135deg,
         #172554,
-        #1d4ed8,
-        #2563eb
+        #1e3a8a
     );
-    margin-bottom: 24px;
+    color: white;
 }
 
 .hero h1 {
-    margin: 0;
-    font-size: 42px;
+    font-size: 2.5rem;
+    margin-bottom: 0.3rem;
 }
 
 .hero p {
-    margin-top: 10px;
-    font-size: 18px;
+    font-size: 1.1rem;
+    opacity: 0.92;
 }
 
-.card {
-    background: white;
+.feature-card {
+    padding: 1.25rem;
+    border-radius: 15px;
     border: 1px solid #e5e7eb;
-    border-radius: 18px;
-    padding: 20px;
-    margin-bottom: 15px;
-    box-shadow: 0 3px 14px rgba(0,0,0,0.04);
+    margin-bottom: 0.8rem;
+    background: white;
 }
 
-.card h3 {
-    margin-top: 8px;
-    margin-bottom: 6px;
+.action-card {
+    padding: 1.5rem;
+    border-radius: 18px;
+    border: 2px solid #dbeafe;
+    background: #eff6ff;
+    margin-bottom: 1rem;
+}
+
+.small-muted {
+    color: #6b7280;
+    font-size: 0.85rem;
 }
 
 .badge {
     display: inline-block;
-    padding: 5px 9px;
+    padding: 0.25rem 0.55rem;
+    margin-right: 0.3rem;
+    margin-bottom: 0.4rem;
     border-radius: 999px;
+    font-size: 0.78rem;
     background: #e0e7ff;
-    color: #3730a3;
-    font-size: 12px;
-    font-weight: 700;
-    margin-right: 5px;
-    margin-bottom: 4px;
 }
 
-.red {
+.badge-red {
     background: #fee2e2;
-    color: #991b1b;
 }
 
-.orange {
+.badge-orange {
     background: #ffedd5;
-    color: #9a3412;
 }
 
-.green {
+.badge-green {
     background: #dcfce7;
-    color: #166534;
 }
 
-.blue {
+.badge-blue {
     background: #dbeafe;
-    color: #1e40af;
-}
-
-.small {
-    color: #6b7280;
-    font-size: 13px;
-}
-
-.priority {
-    background: #fff7ed;
-    border: 1px solid #fed7aa;
-    border-radius: 18px;
-    padding: 20px;
-    margin-bottom: 15px;
-}
-
-.deadline {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-    border-radius: 18px;
-    padding: 20px;
-    margin-bottom: 15px;
-}
-
-.bulletin {
-    background: white;
-    border: 1px solid #d1d5db;
-    border-radius: 18px;
-    padding: 25px;
 }
 
 </style>
@@ -218,191 +463,170 @@ st.markdown(
 
 
 # ============================================================
-# BASIC HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def clean_text(value):
-    """Clean scraped text safely."""
-
     if value is None:
         return ""
 
-    value = html.unescape(str(value))
-    value = re.sub(r"<[^>]*>", " ", value)
-    value = re.sub(r"\s+", " ", value)
+    value = BeautifulSoup(
+        str(value),
+        "html.parser",
+    ).get_text(" ", strip=True)
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
+    )
 
     return value.strip()
 
 
-def safe_get(url, params=None):
-    """Safely download a webpage."""
-
+def safe_get(url, timeout=15):
     try:
-
         response = requests.get(
             url,
-            params=params,
-            headers=HEADERS,
-            timeout=TIMEOUT,
+            headers=REQUEST_HEADERS,
+            timeout=timeout,
         )
 
-        response.raise_for_status()
+        if response.status_code == 200:
+            return response.text
 
-        return response.text, "OK"
+    except Exception:
+        pass
 
-    except requests.RequestException as exc:
-
-        return None, str(exc)
-
-    except Exception as exc:
-
-        return None, str(exc)
+    return ""
 
 
-def ordinal(day):
-    """Return 1st / 2nd / 3rd / 4th etc."""
-
-    if 10 <= day % 100 <= 20:
-        suffix = "th"
-
-    else:
-        suffix = {
-            1: "st",
-            2: "nd",
-            3: "rd",
-        }.get(day % 10, "th")
-
-    return f"{day}{suffix}"
-
-
-def format_date(value):
-    """Format a Python date."""
-
-    if not value:
-        return ""
-
-    return (
-        f"{ordinal(value.day)} "
-        f"{value.strftime('%B %Y')}"
+def make_id(*parts):
+    raw = "|".join(
+        str(x)
+        for x in parts
     )
 
+    return hashlib.md5(
+        raw.encode("utf-8")
+    ).hexdigest()[:12]
 
-def parse_date(text):
-    """Try several UK date formats."""
 
-    if not text:
+def parse_date(value):
+    if not value:
         return None
 
-    text = clean_text(text)
+    if isinstance(value, date):
+        return value
+
+    value = str(value).strip()
 
     patterns = [
-        r"(\d{1,2})(?:st|nd|rd|th)?\s+"
-        r"([A-Za-z]+)\s+(\d{4})",
-
-        r"([A-Za-z]+)\s+"
-        r"(\d{1,2})(?:st|nd|rd|th)?"
-        r"(?:,\s*|\s+)(\d{4})",
+        "%d %B %Y",
+        "%d %b %Y",
+        "%A %d %B %Y",
+        "%a %d %b %Y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%Y-%m-%d",
+        "%d %B",
+        "%d %b",
     ]
 
     for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            text,
-            re.I,
-        )
-
-        if not match:
-            continue
-
-        groups = match.groups()
-
         try:
+            parsed = datetime.strptime(
+                value,
+                pattern,
+            ).date()
 
-            if groups[0].isdigit():
+            if "%Y" not in pattern:
+                parsed = parsed.replace(
+                    year=TODAY.year
+                )
 
-                day = int(groups[0])
-                month = groups[1]
-                year = int(groups[2])
-
-            else:
-
-                month = groups[0]
-                day = int(groups[1])
-                year = int(groups[2])
-
-            for month_format in [
-                "%B",
-                "%b",
-            ]:
-
-                try:
-
-                    return datetime.strptime(
-                        f"{day} {month} {year}",
-                        f"%d {month_format} %Y",
-                    ).date()
-
-                except ValueError:
-                    pass
+            return parsed
 
         except Exception:
-            pass
+            continue
 
     return None
 
 
-def days_until(date_text):
-    """Return number of days until a date."""
+def format_date(value):
+    parsed = parse_date(value)
 
-    parsed = parse_date(date_text)
+    if not parsed:
+        return str(value)
+
+    return parsed.strftime(
+        "%d %b %Y"
+    )
+
+
+def days_until(value):
+    parsed = parse_date(value)
 
     if not parsed:
         return None
 
-    return (
-        parsed - TODAY
-    ).days
+    return (parsed - TODAY).days
 
 
-def make_id(
-    category,
-    title,
-    organisation="",
-    url="",
-):
-    raw = (
-        f"{category}|"
-        f"{title}|"
-        f"{organisation}|"
-        f"{url}"
-    )
+def category_items(items, category):
+    return [
+        item
+        for item in items
+        if item.get("category") == category
+    ]
 
-    return re.sub(
-        r"[^a-z0-9]+",
-        "-",
-        raw.lower(),
-    )[:250]
 
+def get_week_number():
+    return TODAY.isocalendar().week
+
+
+def weekly_action():
+    index = (
+        get_week_number()
+        - 1
+    ) % len(WEEKLY_ACTIONS)
+
+    return WEEKLY_ACTIONS[index]
+
+
+def truncate(text, length=170):
+    text = clean_text(text)
+
+    if len(text) <= length:
+        return text
+
+    return text[:length].rsplit(
+        " ",
+        1,
+    )[0] + "..."
+
+
+# ============================================================
+# ITEM CREATION
+# ============================================================
 
 def make_item(
-    *,
     title,
     organisation="",
     category="",
     description="",
-    location="",
     event_date="",
     closing_date="",
-    start_date="",
-    salary="",
-    level="",
+    location="",
     url="",
     source="",
-    posted_date="",
     tags=None,
     priority=0,
-    verified=True,
+    verified=False,
+    published_date="",
+    level="",
+    salary="",
+    featured=False,
 ):
 
     if tags is None:
@@ -410,122 +634,151 @@ def make_item(
 
     return {
         "id": make_id(
-            category,
             title,
             organisation,
+            event_date,
             url,
         ),
-
         "title": clean_text(title),
-
         "organisation": clean_text(
             organisation
         ),
-
         "category": category,
-
         "description": clean_text(
             description
         ),
-
-        "location": clean_text(
-            location
-        ),
-
         "event_date": clean_text(
             event_date
         ),
-
         "closing_date": clean_text(
             closing_date
         ),
-
-        "start_date": clean_text(
-            start_date
+        "location": clean_text(
+            location
         ),
-
-        "salary": clean_text(
-            salary
-        ),
-
-        "level": clean_text(
-            level
-        ),
-
         "url": url,
-
-        "source": clean_text(
-            source
-        ),
-
-        "posted_date": clean_text(
-            posted_date
-        ),
-
+        "source": source,
         "tags": tags,
-
         "priority": priority,
-
         "verified": verified,
+        "published_date": published_date,
+        "level": level,
+        "salary": salary,
+        "featured": featured,
     }
 
 
 # ============================================================
-# UCAS OPEN DAYS
+# DATE EXTRACTION
 # ============================================================
 
-@st.cache_data(
-    ttl=1800,
-    show_spinner=False,
+MONTHS = (
+    "January|February|March|April|May|June|July|August|"
+    "September|October|November|December"
 )
-def fetch_ucas_open_days(
-    months_ahead=3,
-    max_results=40,
-):
 
-    page, status = safe_get(
-        UCAS_EVENTS_URL,
-        params={
-            "eventType": "Open day",
-        },
-    )
+DATE_PATTERN = re.compile(
+    rf"\b("
+    rf"\d{{1,2}}\s+(?:{MONTHS})\s+\d{{4}}"
+    rf"|"
+    rf"\d{{1,2}}\s+(?:{MONTHS})"
+    rf"|"
+    rf"(?:{MONTHS})\s+\d{{1,2}},\s+\d{{4}}"
+    rf")\b",
+    re.IGNORECASE,
+)
 
-    if page is None:
-        return [], status
 
-    soup = BeautifulSoup(
-        page,
-        "html.parser",
-    )
+def extract_dates(text):
+    if not text:
+        return []
 
-    cutoff = (
-        TODAY
-        + timedelta(
-            days=months_ahead * 31
-        )
+    found = DATE_PATTERN.findall(
+        text
     )
 
     results = []
-    seen_urls = set()
 
-    # UCAS currently exposes individual
-    # event pages under /events/
-    for link in soup.find_all(
-        "a",
-        href=True,
+    for value in found:
+        parsed = parse_date(value)
+
+        if parsed:
+            results.append(
+                (
+                    value,
+                    parsed,
+                )
+            )
+
+    return results
+
+
+def nearest_future_date(text):
+    candidates = extract_dates(text)
+
+    future = [
+        x
+        for x in candidates
+        if x[1] >= TODAY
+    ]
+
+    if not future:
+        return None
+
+    future.sort(
+        key=lambda x: x[1]
+    )
+
+    return future[0]
+
+
+# ============================================================
+# DUCKDUCKGO SEARCH
+# ============================================================
+
+def web_search(
+    query,
+    max_results=8,
+):
+    """
+    Uses DuckDuckGo's HTML results.
+
+    This deliberately avoids requiring an API key.
+    """
+
+    url = (
+        "https://html.duckduckgo.com/html/?q="
+        + quote(query)
+    )
+
+    html_text = safe_get(
+        url,
+        timeout=20,
+    )
+
+    if not html_text:
+        return []
+
+    soup = BeautifulSoup(
+        html_text,
+        "html.parser",
+    )
+
+    results = []
+
+    for result in soup.select(
+        ".result"
     ):
 
-        href = link.get("href", "")
-
-        if "/events/" not in href:
-            continue
-
-        full_url = urljoin(
-            "https://www.ucas.com",
-            href,
+        link = result.select_one(
+            ".result__a"
         )
 
-        if full_url in seen_urls:
+        snippet = result.select_one(
+            ".result__snippet"
+        )
+
+        if not link:
             continue
 
         title = clean_text(
@@ -534,1287 +787,758 @@ def fetch_ucas_open_days(
                 strip=True,
             )
         )
-
-        if not title:
-            continue
-
-        # We want actual open-day style events,
-        # not every UCAS event.
-        title_lower = title.lower()
-
-        if (
-            "open day" not in title_lower
-            and "open-day" not in title_lower
-            and "open evening" not in title_lower
-            and "open event" not in title_lower
-        ):
-            continue
-
-        seen_urls.add(full_url)
-
-        # ----------------------------------------------------
-        # Find a sensible surrounding block
-        # ----------------------------------------------------
-
-        block = link
-
-        for _ in range(6):
-
-            if block.parent is None:
-                break
-
-            block = block.parent
-
-            text = clean_text(
-                block.get_text(
-                    " ",
-                    strip=True,
-                )
-            )
-
-            if 80 <= len(text) <= 1500:
-                break
-
-        block_text = clean_text(
-            block.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        # ----------------------------------------------------
-        # Date
-        # ----------------------------------------------------
-
-        date_match = re.search(
-            r"(\d{1,2}(?:st|nd|rd|th)?\s+"
-            r"[A-Za-z]+\s+\d{4})",
-            block_text,
-            re.I,
-        )
-
-        if not date_match:
-            continue
-
-        event_date = parse_date(
-            date_match.group(1)
-        )
-
-        if not event_date:
-            continue
-
-        if event_date < TODAY:
-            continue
-
-        if event_date > cutoff:
-            continue
-
-        # ----------------------------------------------------
-        # Location
-        # ----------------------------------------------------
-
-        location = ""
-
-        # Often the UCAS card has the location
-        # after the event metadata.
-        possible_locations = [
-            "London",
-            "Manchester",
-            "Liverpool",
-            "Birmingham",
-            "Leeds",
-            "Bristol",
-            "Bath",
-            "Oxford",
-            "Cambridge",
-            "Leicester",
-            "Nottingham",
-            "Sheffield",
-            "Bradford",
-            "York",
-            "Newcastle",
-            "Durham",
-            "Chester",
-            "Preston",
-            "Lincoln",
-            "Poole",
-            "Guildford",
-            "Brighton",
-            "Cardiff",
-            "Swansea",
-            "Edinburgh",
-            "Glasgow",
-            "Aberdeen",
-            "Dundee",
-            "Belfast",
-            "Coventry",
-            "Reading",
-            "Exeter",
-            "Plymouth",
-            "Canterbury",
-            "Chelmsford",
-            "Peterborough",
-            "Milton Keynes",
-            "Worcester",
-            "Hereford",
-            "Rotherham",
-            "Bury",
-            "Stirling",
-        ]
-
-        for city in possible_locations:
-
-            if re.search(
-                rf"\b{re.escape(city)}\b",
-                block_text,
-                re.I,
-            ):
-
-                location = city
-                break
-
-        # ----------------------------------------------------
-        # Tags
-        # ----------------------------------------------------
-
-        tags = [
-            "University event",
-            "Open day",
-            "UCAS",
-        ]
-
-        if "virtual" in block_text.lower():
-            tags.append("Virtual")
-
-        if "undergraduate" in block_text.lower():
-            tags.append("Undergraduate")
-
-        # ----------------------------------------------------
-        # Priority
-        # ----------------------------------------------------
-
-        priority = 200
-
-        days = (
-            event_date - TODAY
-        ).days
-
-        if days <= 7:
-            priority = 800
-
-            tags.append(
-                "🔥 This week"
-            )
-
-        elif days <= 14:
-            priority = 600
-
-            tags.append(
-                "Soon"
-            )
-
-        # ----------------------------------------------------
-        # Item
-        # ----------------------------------------------------
-
-        results.append(
-            make_item(
-                title=title,
-                organisation="",
-                category="🏫 University Open Day",
-                description=(
-                    "Upcoming event listed by UCAS. "
-                    "Open the original UCAS event page "
-                    "to check booking requirements, "
-                    "times and full event information."
-                ),
-                location=location,
-                event_date=format_date(
-                    event_date
-                ),
-                url=full_url,
-                source="UCAS",
-                tags=tags,
-                priority=priority,
-                verified=True,
-            )
-        )
-
-        if len(results) >= max_results:
-            break
-
-    # --------------------------------------------------------
-    # Deduplicate
-    # --------------------------------------------------------
-
-    unique = {}
-
-    for item in results:
-
-        unique[
-            item["url"]
-        ] = item
-
-    results = list(
-        unique.values()
-    )
-
-    # --------------------------------------------------------
-    # Sort
-    # --------------------------------------------------------
-
-    results.sort(
-        key=lambda item: (
-            parse_date(
-                item["event_date"]
-            )
-            or date.max
-        )
-    )
-
-    return results, "OK"
-
-
-# ============================================================
-# GOVERNMENT APPRENTICESHIPS
-# ============================================================
-
-@st.cache_data(
-    ttl=1800,
-    show_spinner=False,
-)
-def fetch_apprenticeships(
-    level="All levels",
-    career_area="All categories",
-    max_results=50,
-):
-
-    params = {}
-
-    level_map = {
-        "Level 2": "2",
-        "Level 3": "3",
-        "Level 4": "4",
-        "Level 5": "5",
-        "Level 6": "6",
-        "Level 7": "7",
-    }
-
-    if level in level_map:
-
-        params["levelIds"] = (
-            level_map[level]
-        )
-
-    page, status = safe_get(
-        GOV_APPRENTICESHIP_URL,
-        params=params,
-    )
-
-    if page is None:
-        return [], status
-
-    soup = BeautifulSoup(
-        page,
-        "html.parser",
-    )
-
-    results = []
-    seen = set()
-
-    # --------------------------------------------------------
-    # Career keyword groups
-    # --------------------------------------------------------
-
-    career_terms = {
-
-        "Digital": [
-            "digital",
-            "software",
-            "developer",
-            "programmer",
-            "cyber",
-            "data",
-            "technology",
-            "IT",
-            "artificial intelligence",
-            "AI",
-            "automation",
-        ],
-
-        "Engineering": [
-            "engineer",
-            "engineering",
-            "manufacturing",
-            "mechanical",
-            "electrical",
-            "aerospace",
-        ],
-
-        "Business & Administration": [
-            "business",
-            "administration",
-            "administrator",
-            "management",
-            "office",
-            "operations",
-            "project",
-        ],
-
-        "Finance & Legal": [
-            "finance",
-            "financial",
-            "accountancy",
-            "accounting",
-            "audit",
-            "legal",
-            "law",
-            "solicitor",
-        ],
-
-        "Health & Science": [
-            "health",
-            "nursing",
-            "pharmacy",
-            "science",
-            "laboratory",
-            "clinical",
-            "dental",
-        ],
-
-        "Creative & Media": [
-            "creative",
-            "design",
-            "graphic",
-            "media",
-            "marketing",
-            "content",
-            "film",
-            "advertising",
-        ],
-
-        "Construction": [
-            "construction",
-            "quantity survey",
-            "building",
-            "civil engineering",
-            "site",
-            "property",
-        ],
-
-        "Education": [
-            "teaching",
-            "teacher",
-            "education",
-            "early years",
-        ],
-    }
-
-    # --------------------------------------------------------
-    # Find vacancy links
-    # --------------------------------------------------------
-
-    links = soup.find_all(
-        "a",
-        href=True,
-    )
-
-    for link in links:
 
         href = link.get(
             "href",
             "",
         )
 
-        if "/apprenticeships/" not in href:
-            continue
+        description = ""
 
-        title = clean_text(
-            link.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        if len(title) < 8:
-            continue
-
-        title_lower = title.lower()
-
-        # Ignore navigation/filter links
-        bad_titles = [
-            "find an apprenticeship",
-            "search",
-            "back",
-            "next",
-            "previous",
-            "sign in",
-        ]
-
-        if title_lower in bad_titles:
-            continue
-
-        full_url = urljoin(
-            "https://www.findapprenticeship.service.gov.uk",
-            href,
-        )
-
-        if full_url in seen:
-            continue
-
-        seen.add(full_url)
-
-        # ----------------------------------------------------
-        # Find vacancy block
-        # ----------------------------------------------------
-
-        block = link
-
-        for _ in range(8):
-
-            if block.parent is None:
-                break
-
-            block = block.parent
-
-            block_text = clean_text(
-                block.get_text(
+        if snippet:
+            description = clean_text(
+                snippet.get_text(
                     " ",
                     strip=True,
                 )
             )
 
-            if (
-                100 <= len(block_text) <= 2200
-                and (
-                    "Start date"
-                    in block_text
-                    or "Wage"
-                    in block_text
-                    or "Closes"
-                    in block_text
-                )
-            ):
-                break
-
-        block_text = clean_text(
-            block.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        # ----------------------------------------------------
-        # Career filter
-        # ----------------------------------------------------
-
-        if career_area != "All categories":
-
-            terms = career_terms.get(
-                career_area,
-                [],
-            )
-
-            if not any(
-                term.lower()
-                in (
-                    title + " " + block_text
-                ).lower()
-                for term in terms
-            ):
-                continue
-
-        # ----------------------------------------------------
-        # Level
-        # ----------------------------------------------------
-
-        level_match = re.search(
-            r"\(level\s+([2-7])\)",
-            block_text,
-            re.I,
-        )
-
-        vacancy_level = ""
-
-        if level_match:
-
-            vacancy_level = (
-                f"Level {level_match.group(1)}"
-            )
-
-        # ----------------------------------------------------
-        # Training course
-        # ----------------------------------------------------
-
-        training = ""
-
-        training_match = re.search(
-            r"Training course\s+"
-            r"(.+?)"
-            r"(?=\s+Wage|\s+Closes|\s+Posted|$)",
-            block_text,
-            re.I,
-        )
-
-        if training_match:
-
-            training = clean_text(
-                training_match.group(1)
-            )
-
-        # ----------------------------------------------------
-        # Wage
-        # ----------------------------------------------------
-
-        salary = ""
-
-        wage_match = re.search(
-            r"Wage\s+"
-            r"(.+?)"
-            r"(?=\s+Closes|\s+Posted|$)",
-            block_text,
-            re.I,
-        )
-
-        if wage_match:
-
-            salary = clean_text(
-                wage_match.group(1)
-            )
-
-        # ----------------------------------------------------
-        # Start date
-        # ----------------------------------------------------
-
-        start_date = ""
-
-        start_match = re.search(
-            r"Start date\s+"
-            r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
-            block_text,
-            re.I,
-        )
-
-        if start_match:
-
-            start_date = clean_text(
-                start_match.group(1)
-            )
-
-        # ----------------------------------------------------
-        # Closing date
-        # ----------------------------------------------------
-
-        closing_date = ""
-
-        close_match = re.search(
-            r"Closes"
-            r".{0,100}?"
-            r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
-            block_text,
-            re.I,
-        )
-
-        if close_match:
-
-            closing_date = (
-                close_match.group(1)
-            )
-
-        else:
-
-            # Handle "Closes today"
-            if re.search(
-                r"Closes\s+today",
-                block_text,
-                re.I,
-            ):
-
-                closing_date = format_date(
-                    TODAY
-                )
-
-            elif re.search(
-                r"Closes\s+tomorrow",
-                block_text,
-                re.I,
-            ):
-
-                closing_date = format_date(
-                    TODAY
-                    + timedelta(days=1)
-                )
-
-        # ----------------------------------------------------
-        # Posted date
-        # ----------------------------------------------------
-
-        posted_date = ""
-
-        posted_match = re.search(
-            r"Posted\s+"
-            r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
-            block_text,
-            re.I,
-        )
-
-        if posted_match:
-
-            posted_date = (
-                posted_match.group(1)
-            )
-
-        # ----------------------------------------------------
-        # Employer
-        # ----------------------------------------------------
-
-        employer = ""
-
-        lines = [
-            clean_text(line)
-            for line in block.stripped_strings
-        ]
-
-        for line in lines:
-
-            if not line:
-                continue
-
-            if line == title:
-                continue
-
-            if (
-                line.startswith("Start date")
-                or line.startswith("Training course")
-                or line.startswith("Wage")
-                or line.startswith("Closes")
-                or line.startswith("Posted")
-            ):
-                continue
-
-            if (
-                "level" in line.lower()
-                and len(line) < 50
-            ):
-                continue
-
-            # The employer normally appears as a
-            # short line after the vacancy title.
-            if 2 < len(line) < 120:
-
-                employer = line
-                break
-
-        # ----------------------------------------------------
-        # Location
-        # ----------------------------------------------------
-
-        location = ""
-
-        # Common pattern:
-        # Employer
-        # CITY (postcode)
-        # Start date
-        location_match = re.search(
-            r"\b([A-Z][A-Za-z .'-]+)"
-            r"\s+\([A-Z0-9 ]{2,10}\)"
-            r"(?:\s+and\s+\d+\s+other locations)?"
-            r"\s+Start date",
-            block_text,
-        )
-
-        if location_match:
-
-            location = clean_text(
-                location_match.group(1)
-            )
-
-        # ----------------------------------------------------
-        # Priority
-        # ----------------------------------------------------
-
-        priority = 100
-
-        tags = [
-            "Live vacancy",
-            "GOV.UK",
-        ]
-
-        closing_parsed = parse_date(
-            closing_date
-        )
-
-        if closing_parsed:
-
-            days = (
-                closing_parsed - TODAY
-            ).days
-
-            if days < 0:
-
-                # Do not publish expired vacancies.
-                continue
-
-            elif days <= 3:
-
-                priority = 1000
-
-                tags.append(
-                    "🔴 Closing very soon"
-                )
-
-            elif days <= 7:
-
-                priority = 900
-
-                tags.append(
-                    "🔥 Closing soon"
-                )
-
-            elif days <= 14:
-
-                priority = 500
-
-                tags.append(
-                    "Closing within 14 days"
-                )
-
-        # ----------------------------------------------------
-        # New vacancy
-        # ----------------------------------------------------
-
-        posted_parsed = parse_date(
-            posted_date
-        )
-
-        if posted_parsed:
-
-            posted_days = (
-                TODAY - posted_parsed
-            ).days
-
-            if 0 <= posted_days <= 7:
-
-                tags.append(
-                    "🆕 New this week"
-                )
-
-                priority += 200
-
-        # ----------------------------------------------------
-        # Degree apprenticeship
-        # ----------------------------------------------------
-
-        combined = (
-            title
-            + " "
-            + training
-            + " "
-            + vacancy_level
-        ).lower()
-
-        if (
-            "degree" in combined
-            or vacancy_level in [
-                "Level 6",
-                "Level 7",
-            ]
-        ):
-
-            tags.append(
-                "🎓 Degree / higher"
-            )
-
-            priority += 100
-
-        # ----------------------------------------------------
-        # Description
-        # ----------------------------------------------------
-
-        description_parts = []
-
-        if training:
-
-            description_parts.append(
-                training
-            )
-
-        description_parts.append(
-            "Live apprenticeship vacancy "
-            "listed on the Government "
-            "Find an Apprenticeship service."
-        )
-
-        description = " ".join(
-            description_parts
-        )
-
-        # ----------------------------------------------------
-        # Add item
-        # ----------------------------------------------------
-
         results.append(
-            make_item(
-                title=title,
-                organisation=employer,
-                category="🎓 Apprenticeship",
-                description=description,
-                location=location,
-                closing_date=closing_date,
-                start_date=start_date,
-                salary=salary,
-                level=vacancy_level,
-                url=full_url,
-                source=(
-                    "GOV.UK Find an Apprenticeship"
-                ),
-                posted_date=posted_date,
-                tags=tags,
-                priority=priority,
-                verified=True,
-            )
+            {
+                "title": title,
+                "url": href,
+                "description": description,
+            }
         )
 
         if len(results) >= max_results:
             break
 
-    # --------------------------------------------------------
-    # Sort
-    # --------------------------------------------------------
-
-    results.sort(
-        key=lambda item: (
-            -item.get("priority", 0),
-            parse_date(
-                item.get(
-                    "closing_date",
-                    "",
-                )
-            )
-            or date.max,
-        )
-    )
-
-    return results, "OK"
-
-
-# ============================================================
-# UCAS KEY DATES
-# ============================================================
-
-def get_ucas_key_dates():
-
-    dates = [
-
-        (
-            date(2026, 9, 1),
-            "2027 entry UCAS applications can be submitted",
-            "Students can submit completed undergraduate applications to UCAS.",
-            ["UCAS", "2027 entry", "Applications"],
-            800,
-        ),
-
-        (
-            date(2026, 10, 1),
-            "Conservatoire music applications deadline",
-            "18:00 UK time deadline for conservatoire music applications.",
-            ["UCAS", "Conservatoire"],
-            700,
-        ),
-
-        (
-            date(2026, 10, 15),
-            "Oxford, Cambridge, Medicine, Dentistry & Veterinary deadline",
-            (
-                "18:00 UK time deadline for applications to "
-                "Oxford and Cambridge and most courses in "
-                "medicine, dentistry and veterinary "
-                "medicine/science."
-            ),
-            [
-                "🔴 Major deadline",
-                "Oxbridge",
-                "Medicine",
-                "Dentistry",
-                "Veterinary",
-            ],
-            1200,
-        ),
-
-        (
-            date(2027, 1, 13),
-            "UCAS Equal Consideration Deadline",
-            (
-                "18:00 UK time deadline for most undergraduate "
-                "applications and most conservatoire undergraduate "
-                "dance, drama and musical theatre courses."
-            ),
-            [
-                "🔴 Major deadline",
-                "2027 entry",
-            ],
-            1200,
-        ),
-
-        (
-            date(2027, 2, 25),
-            "UCAS Extra opens",
-            (
-                "Students who have used all five choices "
-                "and are not holding an offer may be able "
-                "to use Extra."
-            ),
-            [
-                "UCAS Extra",
-            ],
-            700,
-        ),
-
-        (
-            date(2027, 6, 30),
-            "Last date for applications with choices",
-            (
-                "Applications received after this deadline "
-                "are automatically entered into Clearing."
-            ),
-            [
-                "Clearing",
-            ],
-            800,
-        ),
-
-        (
-            date(2027, 7, 1),
-            "UCAS Extra closes",
-            "Final day of UCAS Extra for 2027 entry.",
-            [
-                "UCAS Extra",
-            ],
-            500,
-        ),
-
-        (
-            date(2027, 7, 2),
-            "Clearing opens",
-            "UCAS Clearing vacancies become available.",
-            [
-                "Clearing",
-            ],
-            600,
-        ),
-
-        (
-            date(2027, 9, 23),
-            "Final date for 2027 entry applications",
-            "18:00 UK time final date for 2027 entry applications.",
-            [
-                "Final deadline",
-            ],
-            700,
-        ),
-
-    ]
-
-    results = []
-
-    for (
-        event_date,
-        title,
-        description,
-        tags,
-        priority,
-    ) in dates:
-
-        if event_date < TODAY:
-            continue
-
-        days = (
-            event_date - TODAY
-        ).days
-
-        actual_tags = list(tags)
-
-        if days <= 7:
-
-            actual_tags.append(
-                "🔥 This week"
-            )
-
-        elif days <= 30:
-
-            actual_tags.append(
-                "⏰ Coming soon"
-            )
-
-        results.append(
-            make_item(
-                title=title,
-                organisation="UCAS",
-                category="📅 Key Date",
-                description=description,
-                event_date=format_date(
-                    event_date
-                ),
-                closing_date=(
-                    f"{format_date(event_date)} "
-                    "at 18:00 UK time"
-                ),
-                url=UCAS_DEADLINES_URL,
-                source="UCAS",
-                tags=actual_tags,
-                priority=priority,
-                verified=True,
-            )
-        )
-
     return results
 
 
 # ============================================================
-# AMAZING APPRENTICESHIPS
+# UNIVERSITY OPEN DAYS
 # ============================================================
 
-def get_amazing_apprenticeships():
+def search_university_open_days(
+    months_ahead=3
+):
+    items = []
+    statuses = {}
 
-    return [
+    cutoff = TODAY + timedelta(
+        days=months_ahead * 30
+    )
 
-        make_item(
-            title=(
-                "Higher & Degree Apprenticeship "
-                "Vacancy Listing"
-            ),
-            organisation="Amazing Apprenticeships",
-            category="🎓 Apprenticeship",
-            description=(
-                "Specialist listing of higher and degree "
-                "apprenticeship vacancies. Particularly "
-                "useful for Year 13 students considering "
-                "degree-level apprenticeships."
-            ),
-            location="UK",
-            event_date="Current listings",
-            url=AMAZING_LISTING_URL,
-            source="Amazing Apprenticeships",
-            tags=[
-                "Degree apprenticeship",
-                "Higher apprenticeship",
-                "Year 13",
-            ],
-            priority=350,
-            verified=True,
-        ),
+    for university, details in NORTH_WEST_UNIVERSITIES.items():
 
-        make_item(
-            title=(
-                "Apprenticeship Resources"
-            ),
-            organisation="Amazing Apprenticeships",
-            category="⭐ Resource",
-            description=(
-                "Resources for students covering "
-                "apprenticeships, employers, careers "
-                "and applications."
-            ),
-            location="Online",
-            event_date="Available now",
-            url=AMAZING_RESOURCES_URL,
-            source="Amazing Apprenticeships",
-            tags=[
-                "Apprenticeships",
-                "Student resource",
-            ],
-            priority=300,
-            verified=True,
-        ),
+        domain = details["domain"]
+        city = details["city"]
+
+        query = (
+            f'site:{domain} '
+            f'("open day" OR "open days") '
+            f'2026 OR 2027'
+        )
+
+        results = web_search(
+            query,
+            max_results=5,
+        )
+
+        found = 0
+
+        for result in results:
+
+            combined = (
+                result["title"]
+                + " "
+                + result["description"]
+            )
+
+            if "open day" not in combined.lower():
+                continue
+
+            future = nearest_future_date(
+                combined
+            )
+
+            if not future:
+                continue
+
+            raw_date, event_date = future
+
+            if event_date > cutoff:
+                continue
+
+            days = (
+                event_date - TODAY
+            ).days
+
+            if days <= 7:
+                tags = [
+                    "🔥 This week",
+                    "📍 North West",
+                ]
+                priority = 900
+            elif days <= 14:
+                tags = [
+                    "📅 Coming up",
+                    "📍 North West",
+                ]
+                priority = 700
+            else:
+                tags = [
+                    "📍 North West",
+                ]
+                priority = 450
+
+            items.append(
+                make_item(
+                    title=(
+                        f"{university} — "
+                        f"Open Day"
+                    ),
+                    organisation=university,
+                    category=(
+                        "🏫 University Open Day"
+                    ),
+                    description=(
+                        "University open day. "
+                        "Check the university page "
+                        "for booking and course-specific "
+                        "information."
+                    ),
+                    event_date=format_date(
+                        event_date
+                    ),
+                    location=city,
+                    url=result["url"],
+                    source=(
+                        f"{university} official website"
+                    ),
+                    tags=tags,
+                    priority=priority,
+                    verified=False,
+                )
+            )
+
+            found += 1
+
+        statuses[
+            university
+        ] = (
+            f"{found} event(s) found"
+            if found
+            else "No dated event found"
+        )
+
+    return items, statuses
+
+
+# ============================================================
+# DEGREE / HIGHER APPRENTICESHIPS
+# ============================================================
+
+DEGREE_APPRENTICESHIP_QUERIES = [
+    (
+        '"degree apprenticeship" '
+        '"Liverpool" 2026 OR 2027'
+    ),
+    (
+        '"degree apprenticeship" '
+        '"Manchester" 2026 OR 2027'
+    ),
+    (
+        '"degree apprenticeship" '
+        '"North West" 2026 OR 2027'
+    ),
+    (
+        '"higher apprenticeship" '
+        '"North West" 2026 OR 2027'
+    ),
+    (
+        '"level 6 apprenticeship" '
+        '"Liverpool"'
+    ),
+    (
+        '"level 6 apprenticeship" '
+        '"Manchester"'
+    ),
+    (
+        '"level 7 apprenticeship" '
+        '"North West"'
+    ),
+]
+
+
+def is_degree_apprenticeship(text):
+    text = text.lower()
+
+    terms = [
+        "degree apprenticeship",
+        "degree apprenticeships",
+        "level 6 apprenticeship",
+        "level 7 apprenticeship",
+        "higher apprenticeship",
+        "higher apprenticeships",
+        "chartered apprenticeship",
     ]
 
+    return any(
+        term in text
+        for term in terms
+    )
 
-# ============================================================
-# WORK EXPERIENCE
-# ============================================================
 
-def get_work_experience():
+def infer_level(text):
+    lower = text.lower()
 
-    return [
+    if (
+        "level 7" in lower
+        or "degree apprenticeship" in lower
+    ):
+        return "Level 6/7"
 
-        make_item(
-            title=(
-                "Forage – Virtual Work Experiences"
-            ),
-            organisation="Forage",
-            category="💼 Work Experience",
-            description=(
-                "Free virtual job simulations from "
-                "major employers. Students can explore "
-                "different careers and complete realistic "
-                "work-based tasks."
-            ),
-            location="Online",
-            event_date="Available now",
-            url=FORAGE_URL,
-            source="Forage",
-            tags=[
-                "Virtual",
-                "Free",
-                "Work experience",
-            ],
-            priority=300,
-            verified=True,
-        ),
+    if "level 6" in lower:
+        return "Level 6"
 
-        make_item(
-            title=(
-                "National Careers Service"
-            ),
-            organisation="GOV.UK",
-            category="💼 Work Experience",
-            description=(
-                "Explore careers, job profiles, "
-                "skills and routes into occupations."
-            ),
-            location="Online",
-            event_date="Available now",
-            url=NCS_URL,
-            source="National Careers Service",
-            tags=[
-                "Career research",
-            ],
-            priority=200,
-            verified=True,
-        ),
+    if "higher apprenticeship" in lower:
+        return "Higher Apprenticeship"
+
+    return "Higher / Degree"
+
+
+def infer_location(text):
+    lower = text.lower()
+
+    places = [
+        "Liverpool",
+        "Manchester",
+        "Chester",
+        "Preston",
+        "Lancaster",
+        "Salford",
+        "Bolton",
+        "Carlisle",
+        "Blackburn",
+        "Warrington",
+        "Wirral",
     ]
 
+    for place in places:
+        if place.lower() in lower:
+            return place
+
+    return "North West / UK"
+
+
+def search_degree_apprenticeships(
+    selected_career="All categories"
+):
+    items = []
+    seen = set()
+
+    queries = list(
+        DEGREE_APPRENTICESHIP_QUERIES
+    )
+
+    keywords = CAREER_KEYWORDS.get(
+        selected_career,
+        [],
+    )
+
+    if keywords:
+        queries.extend(
+            [
+                (
+                    f'"degree apprenticeship" '
+                    f'"{keyword}" '
+                    f'"North West"'
+                )
+                for keyword in keywords[:4]
+            ]
+        )
+
+    for query in queries:
+
+        results = web_search(
+            query,
+            max_results=8,
+        )
+
+        for result in results:
+
+            title = result["title"]
+            description = result[
+                "description"
+            ]
+            url = result["url"]
+
+            combined = (
+                title
+                + " "
+                + description
+            )
+
+            if not is_degree_apprenticeship(
+                combined
+            ):
+                continue
+
+            key = url or title
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            future = nearest_future_date(
+                combined
+            )
+
+            closing_date = ""
+
+            if future:
+                closing_date = format_date(
+                    future[1]
+                )
+
+            location = infer_location(
+                combined
+            )
+
+            days = days_until(
+                closing_date
+            )
+
+            if days is not None:
+                if days <= 3:
+                    priority = 1000
+                    tags = [
+                        "🔴 Closing soon",
+                        "🎓 Degree apprenticeship",
+                    ]
+                elif days <= 7:
+                    priority = 950
+                    tags = [
+                        "🔥 This week",
+                        "🎓 Degree apprenticeship",
+                    ]
+                else:
+                    priority = 800
+                    tags = [
+                        "🎓 Degree apprenticeship",
+                    ]
+            else:
+                priority = 650
+                tags = [
+                    "🎓 Degree apprenticeship",
+                ]
+
+            if (
+                location
+                not in [
+                    "North West / UK",
+                    "UK",
+                ]
+            ):
+                tags.append(
+                    "📍 North West"
+                )
+
+            items.append(
+                make_item(
+                    title=title,
+                    organisation=(
+                        urlparse(url).netloc
+                        if url
+                        else ""
+                    ),
+                    category=(
+                        "🎓 Degree Apprenticeship"
+                    ),
+                    description=truncate(
+                        description,
+                        240,
+                    ),
+                    closing_date=closing_date,
+                    location=location,
+                    url=url,
+                    source="Web search",
+                    tags=tags,
+                    priority=priority,
+                    verified=False,
+                    level=infer_level(
+                        combined
+                    ),
+                )
+            )
+
+    return items
+
 
 # ============================================================
-# RESOURCES
+# GENERAL APPRENTICESHIPS
 # ============================================================
 
-def get_resources():
+def search_general_apprenticeships(
+    selected_career="All categories"
+):
+
+    queries = [
+        '"apprenticeship vacancy" Liverpool 2026',
+        '"apprenticeship vacancy" Manchester 2026',
+        '"apprenticeships" "North West" 2026',
+    ]
+
+    keywords = CAREER_KEYWORDS.get(
+        selected_career,
+        [],
+    )
+
+    if keywords:
+        queries.extend(
+            [
+                (
+                    f'apprenticeship vacancy '
+                    f'"{keyword}" '
+                    f'Liverpool Manchester 2026'
+                )
+                for keyword in keywords[:3]
+            ]
+        )
+
+    items = []
+    seen = set()
+
+    for query in queries:
+
+        results = web_search(
+            query,
+            max_results=6,
+        )
+
+        for result in results:
+
+            title = result["title"]
+            description = result[
+                "description"
+            ]
+            url = result["url"]
+
+            combined = (
+                title
+                + " "
+                + description
+            )
+
+            lower = combined.lower()
+
+            if (
+                "apprenticeship"
+                not in lower
+            ):
+                continue
+
+            if is_degree_apprenticeship(
+                combined
+            ):
+                continue
+
+            key = url or title
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            future = nearest_future_date(
+                combined
+            )
+
+            closing_date = ""
+
+            if future:
+                closing_date = format_date(
+                    future[1]
+                )
+
+            days = days_until(
+                closing_date
+            )
+
+            priority = 350
+
+            if days is not None:
+                if days <= 3:
+                    priority = 850
+                elif days <= 7:
+                    priority = 750
+
+            items.append(
+                make_item(
+                    title=title,
+                    organisation=(
+                        urlparse(url).netloc
+                        if url
+                        else ""
+                    ),
+                    category="🎓 Apprenticeship",
+                    description=truncate(
+                        description,
+                        220,
+                    ),
+                    closing_date=closing_date,
+                    location=infer_location(
+                        combined
+                    ),
+                    url=url,
+                    source="Web search",
+                    tags=[
+                        "🎓 Apprenticeship"
+                    ],
+                    priority=priority,
+                    verified=False,
+                )
+            )
+
+    return items
+
+
+# ============================================================
+# UCAS DEADLINES
+# ============================================================
+
+def get_ucas_deadlines():
 
     return [
-
         make_item(
-            title="UCAS Discover",
+            title=(
+                "UCAS application deadline — "
+                "check the official timetable"
+            ),
             organisation="UCAS",
-            category="⭐ Resource",
+            category="📅 Key Date",
             description=(
-                "Explore subjects, careers, universities "
-                "and apprenticeships."
+                "Check the official UCAS application "
+                "deadline timetable for the course "
+                "and application cycle you are using."
             ),
-            location="Online",
-            event_date="Available now",
-            url=UCAS_DISCOVER_URL,
+            url="https://www.ucas.com/",
             source="UCAS",
             tags=[
-                "University",
-                "Careers",
-                "Apprenticeships",
+                "📅 Key date"
             ],
-            priority=250,
+            priority=500,
             verified=True,
-        ),
-
-        make_item(
-            title="UCAS Apprenticeships",
-            organisation="UCAS",
-            category="⭐ Resource",
-            description=(
-                "Information about apprenticeships, "
-                "including degree apprenticeships."
-            ),
-            location="Online",
-            event_date="Available now",
-            url=UCAS_APPRENTICESHIPS_URL,
-            source="UCAS",
-            tags=[
-                "Apprenticeships",
-            ],
-            priority=250,
-            verified=True,
-        ),
+        )
     ]
 
 
 # ============================================================
-# BUILD DATASET
+# COLLEGE ACTIVITIES
+# ============================================================
+
+def custom_activity_items():
+    return [
+        item
+        for item in st.session_state.custom_items
+        if item.get("id")
+        not in st.session_state.removed
+    ]
+
+
+# ============================================================
+# DEDUPLICATION
+# ============================================================
+
+def deduplicate_items(items):
+
+    result = []
+    seen = set()
+
+    for item in items:
+
+        key = (
+            item.get("title", "").lower(),
+            item.get("organisation", "").lower(),
+            item.get("event_date", "").lower(),
+            item.get("url", "").lower(),
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        result.append(item)
+
+    return result
+
+
+# ============================================================
+# FILTERING
+# ============================================================
+
+def career_matches(
+    item,
+    selected_career
+):
+
+    if selected_career == "All categories":
+        return True
+
+    keywords = CAREER_KEYWORDS.get(
+        selected_career,
+        [],
+    )
+
+    searchable = " ".join(
+        [
+            item.get("title", ""),
+            item.get("description", ""),
+            item.get("organisation", ""),
+        ]
+    ).lower()
+
+    return any(
+        keyword.lower()
+        in searchable
+        for keyword in keywords
+    )
+
+
+# ============================================================
+# REFRESH ALL DATA
 # ============================================================
 
 def refresh_all(
-    level,
-    career_area,
+    selected_career,
     months_ahead,
 ):
 
     all_items = []
+
     statuses = {}
 
     # --------------------------------------------------------
-    # UCAS
+    # UNIVERSITY OPEN DAYS
     # --------------------------------------------------------
 
-    ucas_items, ucas_status = (
-        fetch_ucas_open_days(
-            months_ahead=months_ahead,
-            max_results=40,
+    open_days, university_status = (
+        search_university_open_days(
+            months_ahead
         )
     )
 
     all_items.extend(
-        ucas_items
+        open_days
     )
 
-    statuses["UCAS"] = ucas_status
+    statuses[
+        "North West universities"
+    ] = university_status
 
     # --------------------------------------------------------
-    # Government apprenticeships
+    # DEGREE APPRENTICESHIPS
     # --------------------------------------------------------
 
-    apprenticeship_items, apprenticeship_status = (
-        fetch_apprenticeships(
-            level=level,
-            career_area=career_area,
-            max_results=50,
+    degree_apps = (
+        search_degree_apprenticeships(
+            selected_career
         )
     )
 
     all_items.extend(
-        apprenticeship_items
+        degree_apps
     )
 
-    statuses["Government Apprenticeships"] = (
-        apprenticeship_status
-    )
-
-    # --------------------------------------------------------
-    # Static official / specialist sources
-    # --------------------------------------------------------
-
-    all_items.extend(
-        get_ucas_key_dates()
-    )
-
-    all_items.extend(
-        get_amazing_apprenticeships()
-    )
-
-    all_items.extend(
-        get_work_experience()
-    )
-
-    all_items.extend(
-        get_resources()
+    statuses[
+        "Degree apprenticeships"
+    ] = (
+        f"{len(degree_apps)} results"
     )
 
     # --------------------------------------------------------
-    # College-created items
+    # GENERAL APPRENTICESHIPS
     # --------------------------------------------------------
 
+    apprenticeships = (
+        search_general_apprenticeships(
+            selected_career
+        )
+    )
+
     all_items.extend(
-        st.session_state.custom_items
+        apprenticeships
+    )
+
+    statuses[
+        "General apprenticeships"
+    ] = (
+        f"{len(apprenticeships)} results"
     )
 
     # --------------------------------------------------------
-    # Remove manually removed items
+    # KEY DATES
+    # --------------------------------------------------------
+
+    all_items.extend(
+        get_ucas_deadlines()
+    )
+
+    # --------------------------------------------------------
+    # COLLEGE ACTIVITIES
+    # --------------------------------------------------------
+
+    all_items.extend(
+        custom_activity_items()
+    )
+
+    # --------------------------------------------------------
+    # FILTER CAREER
+    # --------------------------------------------------------
+
+    if (
+        selected_career
+        != "All categories"
+    ):
+        filtered = []
+
+        for item in all_items:
+
+            if (
+                item.get("category")
+                == "🏫 University Open Day"
+            ):
+                filtered.append(item)
+
+            elif (
+                item.get("category")
+                == "📅 Key Date"
+            ):
+                filtered.append(item)
+
+            elif career_matches(
+                item,
+                selected_career,
+            ):
+                filtered.append(item)
+
+            elif item.get(
+                "source"
+            ) == "College added":
+                filtered.append(item)
+
+        all_items = filtered
+
+    all_items = deduplicate_items(
+        all_items
+    )
+
+    # --------------------------------------------------------
+    # REMOVE DELETED ITEMS
     # --------------------------------------------------------
 
     all_items = [
@@ -1824,250 +1548,229 @@ def refresh_all(
         not in st.session_state.removed
     ]
 
-    # --------------------------------------------------------
-    # Validate
-    # --------------------------------------------------------
-
-    validated = []
-
-    for item in all_items:
-
-        if not isinstance(
-            item,
-            dict,
-        ):
-            continue
-
-        if not item.get("title"):
-            continue
-
-        # Live opportunities must have a URL.
-        if item.get(
-            "category"
-        ) in [
-            "🎓 Apprenticeship",
-            "🏫 University Open Day",
-        ]:
-
-            if not item.get("url"):
-                continue
-
-        validated.append(item)
-
-    # --------------------------------------------------------
-    # Deduplicate
-    # --------------------------------------------------------
-
-    unique = {}
-
-    for item in validated:
-
-        key = (
-            item.get("category", ""),
-            item.get("title", "").lower(),
-            item.get("organisation", "").lower(),
-            item.get("url", ""),
-        )
-
-        if key not in unique:
-
-            unique[key] = item
-
-    return list(
-        unique.values()
-    ), statuses
+    return all_items, statuses
 
 
 # ============================================================
-# PRIORITY ENGINE
+# RANKING
 # ============================================================
 
-def get_priorities(items):
+def ranking_score(item):
 
-    if not isinstance(
-        items,
-        list,
-    ):
-        return []
-
-    priorities = []
-
-    for item in items:
-
-        if not isinstance(
-            item,
-            dict,
-        ):
-            continue
-
-        priority = item.get(
+    score = int(
+        item.get(
             "priority",
             0,
         )
+    )
 
-        try:
-            priority = int(priority)
+    tags = item.get(
+        "tags",
+        [],
+    )
 
-        except Exception:
-            priority = 0
+    category = item.get(
+        "category",
+        "",
+    )
 
-        closing = parse_date(
-            item.get(
-                "closing_date",
-                "",
-            )
+    if "🔴 Closing soon" in tags:
+        score += 500
+
+    if "🔥 This week" in tags:
+        score += 350
+
+    if (
+        "📍 North West"
+        in tags
+    ):
+        score += 250
+
+    if (
+        category
+        == "🎓 Degree Apprenticeship"
+    ):
+        score += 300
+
+    if item.get(
+        "featured",
+        False,
+    ):
+        score += 450
+
+    if item.get(
+        "source"
+    ) == "College added":
+        score += 400
+
+    # Date urgency
+
+    closing = days_until(
+        item.get(
+            "closing_date",
+            "",
         )
+    )
 
-        event = parse_date(
+    event = days_until(
+        item.get(
+            "event_date",
+            "",
+        )
+    )
+
+    if closing is not None:
+        if closing <= 3:
+            score += 600
+        elif closing <= 7:
+            score += 400
+        elif closing <= 14:
+            score += 150
+
+    if event is not None:
+        if event <= 7:
+            score += 450
+        elif event <= 14:
+            score += 200
+
+    return score
+
+
+def get_priorities(items):
+
+    ranked = sorted(
+        items,
+        key=ranking_score,
+        reverse=True,
+    )
+
+    return ranked
+
+
+# ============================================================
+# SHORT WEEKLY SELECTION
+# ============================================================
+
+def weekly_highlights(items):
+
+    ranked = get_priorities(
+        items
+    )
+
+    selected = []
+
+    # --------------------------------------------------------
+    # 1. URGENT / CLOSING
+    # --------------------------------------------------------
+
+    urgent = [
+        item
+        for item in ranked
+        if (
+            days_until(
+                item.get(
+                    "closing_date",
+                    "",
+                )
+            )
+            is not None
+            and days_until(
+                item.get(
+                    "closing_date",
+                    "",
+                )
+            )
+            <= 7
+        )
+    ]
+
+    for item in urgent:
+        if item not in selected:
+            selected.append(item)
+
+        if len(selected) >= 2:
+            break
+
+    # --------------------------------------------------------
+    # 2. NORTH WEST OPEN DAY
+    # --------------------------------------------------------
+
+    open_days = [
+        item
+        for item in ranked
+        if item.get(
+            "category"
+        ) == "🏫 University Open Day"
+    ]
+
+    for item in open_days:
+
+        event_days = days_until(
             item.get(
                 "event_date",
                 "",
             )
         )
 
-        is_priority = (
-            priority >= 800
-        )
+        if (
+            event_days is not None
+            and event_days <= 30
+            and item not in selected
+        ):
+            selected.append(item)
+            break
 
-        if closing:
+    # --------------------------------------------------------
+    # 3. DEGREE APPRENTICESHIP
+    # --------------------------------------------------------
 
-            days = (
-                closing - TODAY
-            ).days
-
-            if 0 <= days <= 7:
-
-                is_priority = True
-
-        if event:
-
-            days = (
-                event - TODAY
-            ).days
-
-            if 0 <= days <= 7:
-
-                is_priority = True
-
-        if is_priority:
-
-            priorities.append(item)
-
-    priorities.sort(
-        key=lambda item: (
-            -int(
-                item.get(
-                    "priority",
-                    0,
-                )
-            ),
-            parse_date(
-                item.get(
-                    "closing_date",
-                    "",
-                )
-            )
-            or parse_date(
-                item.get(
-                    "event_date",
-                    "",
-                )
-            )
-            or date.max,
-        )
-    )
-
-    return priorities[:10]
-
-
-# ============================================================
-# CATEGORY FILTER
-# ============================================================
-
-def category_items(
-    items,
-    category,
-):
-
-    return [
+    degree_apps = [
         item
-        for item in items
-        if isinstance(item, dict)
-        and item.get(
+        for item in ranked
+        if item.get(
             "category"
-        ) == category
+        ) == "🎓 Degree Apprenticeship"
     ]
 
+    for item in degree_apps:
 
-# ============================================================
-# SEARCH
-# ============================================================
+        if item not in selected:
+            selected.append(item)
+            break
 
-def search_items(
-    items,
-    search,
-):
+    # --------------------------------------------------------
+    # 4. COLLEGE ACTIVITY
+    # --------------------------------------------------------
 
-    if not search:
-        return items
+    college = [
+        item
+        for item in ranked
+        if item.get(
+            "source"
+        ) == "College added"
+        and item not in selected
+    ]
 
-    search = search.lower().strip()
+    if college:
+        selected.append(
+            college[0]
+        )
 
-    results = []
+    # --------------------------------------------------------
+    # 5. FILL ONLY IF NECESSARY
+    # --------------------------------------------------------
 
-    for item in items:
+    for item in ranked:
 
-        searchable = " ".join(
-            [
-                str(
-                    item.get(
-                        "title",
-                        "",
-                    )
-                ),
+        if item in selected:
+            continue
 
-                str(
-                    item.get(
-                        "organisation",
-                        "",
-                    )
-                ),
+        selected.append(item)
 
-                str(
-                    item.get(
-                        "description",
-                        "",
-                    )
-                ),
+        if len(selected) >= 5:
+            break
 
-                str(
-                    item.get(
-                        "location",
-                        "",
-                    )
-                ),
-
-                str(
-                    item.get(
-                        "level",
-                        "",
-                    )
-                ),
-
-                " ".join(
-                    item.get(
-                        "tags",
-                        [],
-                    )
-                ),
-            ]
-        ).lower()
-
-        if search in searchable:
-
-            results.append(item)
-
-    return results
+    return selected[:5]
 
 
 # ============================================================
@@ -2080,15 +1783,9 @@ def display_card(
     removable=True,
 ):
 
-    if not isinstance(
-        item,
-        dict,
-    ):
-        return
-
     title = item.get(
         "title",
-        "Untitled opportunity",
+        "Untitled",
     )
 
     organisation = item.get(
@@ -2101,167 +1798,102 @@ def display_card(
         "",
     )
 
-    location = item.get(
-        "location",
-        "",
-    )
-
-    event_date = item.get(
-        "event_date",
-        "",
-    )
-
-    closing_date = item.get(
-        "closing_date",
-        "",
-    )
-
-    salary = item.get(
-        "salary",
-        "",
-    )
-
-    level = item.get(
-        "level",
-        "",
-    )
-
-    source = item.get(
-        "source",
-        "",
-    )
-
-    tags = item.get(
-        "tags",
-        [],
-    )
-
     badges = ""
 
-    for tag in tags[:6]:
-
-        css_class = "badge"
+    for tag in item.get(
+        "tags",
+        [],
+    )[:5]:
 
         if (
-            "Closing" in tag
-            or "Major" in tag
-            or "🔴" in tag
+            "🔴" in tag
+            or "Closing" in tag
         ):
-
-            css_class += " red"
+            css = "badge badge-red"
 
         elif (
             "🔥" in tag
             or "Soon" in tag
         ):
+            css = "badge badge-orange"
 
-            css_class += " orange"
-
-        elif "New" in tag:
-
-            css_class += " green"
+        elif "🆕" in tag:
+            css = "badge badge-green"
 
         else:
-
-            css_class += " blue"
+            css = "badge badge-blue"
 
         badges += (
-            f'<span class="{css_class}">'
+            f'<span class="{css}">'
             f'{html.escape(tag)}'
             f'</span>'
         )
 
-    extra = ""
-
-    if organisation:
-
-        extra += (
-            f"<p><strong>"
-            f"{html.escape(organisation)}"
-            f"</strong></p>"
-        )
-
-    if location:
-
-        extra += (
-            f"<p>📍 "
-            f"{html.escape(location)}"
-            f"</p>"
-        )
-
-    if event_date:
-
-        extra += (
-            f"<p>📅 "
-            f"{html.escape(event_date)}"
-            f"</p>"
-        )
-
-    if closing_date:
-
-        extra += (
-            f"<p>⏰ Closing: "
-            f"{html.escape(closing_date)}"
-            f"</p>"
-        )
-
-    if level:
-
-        extra += (
-            f"<p>🎓 "
-            f"{html.escape(level)}"
-            f"</p>"
-        )
-
-    if salary:
-
-        extra += (
-            f"<p>💷 "
-            f"{html.escape(salary)}"
-            f"</p>"
-        )
-
     st.markdown(
         f"""
-<div class="card">
+        <div class="feature-card">
 
-{badges}
+        {badges}
 
-<h3>{html.escape(title)}</h3>
+        <h3>
+        {html.escape(title)}
+        </h3>
 
-{extra}
+        <p>
+        <strong>
+        {html.escape(organisation)}
+        </strong>
+        </p>
 
-<p>{html.escape(description)}</p>
+        <p>
+        {html.escape(
+            truncate(description, 300)
+        )}
+        </p>
 
-<p class="small">
-Source: {html.escape(source)}
-</p>
+        <p>
+        📍 {html.escape(
+            item.get("location", "")
+        )}
+        </p>
 
-</div>
-""",
+        <p>
+        📅 {html.escape(
+            item.get("event_date", "")
+        )}
+        </p>
+
+        <p>
+        ⏰ {html.escape(
+            item.get("closing_date", "")
+        )}
+        </p>
+
+        <p class="small-muted">
+        Source: {html.escape(
+            item.get("source", "")
+        )}
+        </p>
+
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
-    col1, col2 = st.columns(
+    c1, c2 = st.columns(
         [3, 1]
     )
 
-    with col1:
+    with c1:
 
-        url = item.get(
-            "url",
-            "",
-        )
-
-        if url:
+        if item.get("url"):
 
             st.link_button(
-                "🔗 View original opportunity",
-                url,
-                use_container_width=False,
+                "🔗 View opportunity",
+                item["url"],
             )
 
-    with col2:
+    with c2:
 
         if removable:
 
@@ -2281,15 +1913,13 @@ Source: {html.escape(source)}
             ):
 
                 st.session_state.removed.add(
-                    item.get(
-                        "id",
-                        "",
-                    )
+                    item.get("id")
                 )
 
                 st.session_state.items = [
                     x
-                    for x in st.session_state.items
+                    for x
+                    in st.session_state.items
                     if x.get("id")
                     != item.get("id")
                 ]
@@ -2298,521 +1928,166 @@ Source: {html.escape(source)}
 
 
 # ============================================================
-# BULLETIN BUILDER
+# WEEKLY ACTION DISPLAY
+# ============================================================
+
+def display_weekly_action():
+
+    action = weekly_action()
+
+    st.markdown(
+        f"""
+        <div class="action-card">
+
+        <div class="small-muted">
+        💡 YOUR ACTION THIS WEEK
+        </div>
+
+        <h2>
+        {html.escape(action["title"])}
+        </h2>
+
+        <p>
+        {html.escape(action["text"])}
+        </p>
+
+        <strong>
+        ✅ {html.escape(action["target"])}
+        </strong>
+
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# TEAMS BULLETIN
+#
+# VERY IMPORTANT:
+# This intentionally contains only a SMALL number of items.
 # ============================================================
 
 def build_bulletin(items):
 
+    highlights = weekly_highlights(
+        items
+    )
+
+    action = weekly_action()
+
     lines = []
 
     lines.append(
-        "🎓 KS5 PROGRESSION BULLETIN"
+        "🎓 KS5 PROGRESSION — THIS WEEK"
     )
 
     lines.append(
         f"Week commencing "
-        f"{format_date(TODAY)}"
+        f"{TODAY.strftime('%d %B %Y')}"
     )
 
     lines.append("")
+
+    # --------------------------------------------------------
+    # WEEKLY ACTION
+    # --------------------------------------------------------
 
     lines.append(
-        "Here are this week's live "
-        "opportunities, university events, "
-        "work experience options and key "
-        "progression dates for KS5 students."
+        "💡 YOUR ACTION THIS WEEK"
     )
-
-    lines.append("")
 
     lines.append(
-        "━━━━━━━━━━━━━━━━━━━━"
+        action["title"]
+    )
+
+    lines.append(
+        action["text"]
+    )
+
+    lines.append(
+        f"✅ {action['target']}"
     )
 
     lines.append("")
 
-    # ========================================================
-    # PRIORITIES
-    # ========================================================
+    # --------------------------------------------------------
+    # DON'T MISS
+    # --------------------------------------------------------
 
-    priorities = get_priorities(
-        items
-    )
-
-    if priorities:
+    if highlights:
 
         lines.append(
-            "🚨 THIS WEEK'S PRIORITIES"
+            "🔥 DON'T MISS"
         )
 
         lines.append("")
 
-        for item in priorities[:6]:
+        for item in highlights:
+
+            title = item.get(
+                "title",
+                "Opportunity",
+            )
 
             lines.append(
-                f"🔴 {item['title']}"
+                f"• {title}"
             )
 
             if item.get(
                 "organisation"
             ):
-
                 lines.append(
-                    f"Organisation: "
-                    f"{item['organisation']}"
+                    f"  {item['organisation']}"
                 )
 
             if item.get(
                 "event_date"
             ):
-
                 lines.append(
-                    f"📅 {item['event_date']}"
+                    f"  📅 {item['event_date']}"
                 )
 
             if item.get(
                 "closing_date"
             ):
-
                 lines.append(
-                    f"⏰ {item['closing_date']}"
-                )
-
-            if item.get(
-                "url"
-            ):
-
-                lines.append(
-                    f"🔗 {item['url']}"
-                )
-
-            lines.append("")
-
-        lines.append(
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-
-        lines.append("")
-
-    # ========================================================
-    # UNIVERSITY OPEN DAYS
-    # ========================================================
-
-    open_days = category_items(
-        items,
-        "🏫 University Open Day",
-    )
-
-    open_days.sort(
-        key=lambda item:
-        parse_date(
-            item.get(
-                "event_date",
-                "",
-            )
-        )
-        or date.max
-    )
-
-    if open_days:
-
-        lines.append(
-            "🏫 UNIVERSITY OPEN DAYS"
-        )
-
-        lines.append("")
-
-        for item in open_days[:15]:
-
-            lines.append(
-                f"🔹 {item['title']}"
-            )
-
-            if item.get(
-                "event_date"
-            ):
-
-                lines.append(
-                    f"📅 {item['event_date']}"
-                )
-
-            if item.get(
-                "location"
-            ):
-
-                lines.append(
-                    f"📍 {item['location']}"
-                )
-
-            lines.append(
-                "Check the original UCAS event "
-                "page for booking information."
-            )
-
-            if item.get(
-                "url"
-            ):
-
-                lines.append(
-                    f"🔗 {item['url']}"
-                )
-
-            lines.append("")
-
-        lines.append(
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-
-        lines.append("")
-
-    # ========================================================
-    # APPRENTICESHIPS
-    # ========================================================
-
-    apprenticeships = category_items(
-        items,
-        "🎓 Apprenticeship",
-    )
-
-    apprenticeships.sort(
-        key=lambda item: (
-            -int(
-                item.get(
-                    "priority",
-                    0,
-                )
-            ),
-            parse_date(
-                item.get(
-                    "closing_date",
-                    "",
-                )
-            )
-            or date.max,
-        )
-    )
-
-    if apprenticeships:
-
-        lines.append(
-            "🎓 LIVE APPRENTICESHIPS"
-        )
-
-        lines.append("")
-
-        for item in apprenticeships[:20]:
-
-            lines.append(
-                f"🔹 {item['title']}"
-            )
-
-            if item.get(
-                "organisation"
-            ):
-
-                lines.append(
-                    f"Employer: "
-                    f"{item['organisation']}"
-                )
-
-            if item.get(
-                "location"
-            ):
-
-                lines.append(
-                    f"📍 {item['location']}"
-                )
-
-            if item.get(
-                "level"
-            ):
-
-                lines.append(
-                    f"🎓 {item['level']}"
-                )
-
-            if item.get(
-                "salary"
-            ):
-
-                lines.append(
-                    f"💷 {item['salary']}"
-                )
-
-            if item.get(
-                "start_date"
-            ):
-
-                lines.append(
-                    f"🚀 Start: "
-                    f"{item['start_date']}"
-                )
-
-            if item.get(
-                "closing_date"
-            ):
-
-                lines.append(
-                    f"⏰ Closing: "
+                    f"  ⏰ Closes "
                     f"{item['closing_date']}"
                 )
 
-            if (
-                "🔴 Closing very soon"
-                in item.get(
-                    "tags",
-                    [],
-                )
+            if item.get(
+                "location"
             ):
-
                 lines.append(
-                    "🚨 CLOSING VERY SOON"
-                )
-
-            elif (
-                "🔥 Closing soon"
-                in item.get(
-                    "tags",
-                    [],
-                )
-            ):
-
-                lines.append(
-                    "🔥 CLOSING SOON"
+                    f"  📍 {item['location']}"
                 )
 
             if item.get(
                 "url"
             ):
-
                 lines.append(
-                    f"🔗 {item['url']}"
+                    f"  🔗 {item['url']}"
                 )
 
             lines.append("")
 
-        lines.append(
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-
-        lines.append("")
-
-    # ========================================================
-    # KEY DATES
-    # ========================================================
-
-    key_dates = category_items(
-        items,
-        "📅 Key Date",
-    )
-
-    key_dates.sort(
-        key=lambda item:
-        parse_date(
-            item.get(
-                "event_date",
-                "",
-            )
-        )
-        or date.max
-    )
-
-    if key_dates:
-
-        lines.append(
-            "📅 KEY UCAS DATES"
-        )
-
-        lines.append("")
-
-        for item in key_dates:
-
-            lines.append(
-                f"📅 {item['event_date']}"
-            )
-
-            lines.append(
-                f"🔹 {item['title']}"
-            )
-
-            lines.append(
-                item["description"]
-            )
-
-            lines.append(
-                f"🔗 {item['url']}"
-            )
-
-            lines.append("")
-
-        lines.append(
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-
-        lines.append("")
-
-    # ========================================================
-    # WORK EXPERIENCE
-    # ========================================================
-
-    work = category_items(
-        items,
-        "💼 Work Experience",
-    )
-
-    if work:
-
-        lines.append(
-            "💼 WORK EXPERIENCE & CAREER EXPERIENCE"
-        )
-
-        lines.append("")
-
-        for item in work:
-
-            lines.append(
-                f"🔹 {item['title']}"
-            )
-
-            if item.get(
-                "organisation"
-            ):
-
-                lines.append(
-                    f"Organisation: "
-                    f"{item['organisation']}"
-                )
-
-            lines.append(
-                item["description"]
-            )
-
-            if item.get(
-                "location"
-            ):
-
-                lines.append(
-                    f"📍 {item['location']}"
-                )
-
-            lines.append(
-                f"🔗 {item['url']}"
-            )
-
-            lines.append("")
-
-        lines.append(
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-
-        lines.append("")
-
-    # ========================================================
-    # RESOURCES
-    # ========================================================
-
-    resources = category_items(
-        items,
-        "⭐ Resource",
-    )
-
-    if resources:
-
-        lines.append(
-            "⭐ USEFUL RESOURCES"
-        )
-
-        lines.append("")
-
-        for item in resources:
-
-            lines.append(
-                f"🔹 {item['title']}"
-            )
-
-            lines.append(
-                item["description"]
-            )
-
-            lines.append(
-                f"🔗 {item['url']}"
-            )
-
-            lines.append("")
-
-        lines.append(
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-
-        lines.append("")
-
-    # ========================================================
-    # STUDENT CHALLENGE
-    # ========================================================
+    # --------------------------------------------------------
+    # KEEP THIS SHORT
+    # --------------------------------------------------------
 
     lines.append(
-        "🎯 THIS WEEK'S PROGRESSION CHALLENGE"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "Choose ONE thing to move your "
-        "post-18 plans forward:"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "☐ Book a university open day"
+        "📚 Want more?"
     )
 
     lines.append(
-        "☐ Apply for an apprenticeship"
+        "Open the KS5 Progression Hub "
+        "to explore all current opportunities."
     )
 
-    lines.append(
-        "☐ Research a degree apprenticeship"
+    return "\n".join(
+        lines
     )
-
-    lines.append(
-        "☐ Find work experience"
-    )
-
-    lines.append(
-        "☐ Research a career"
-    )
-
-    lines.append(
-        "☐ Update your CV"
-    )
-
-    lines.append(
-        "☐ Speak to your tutor or careers team"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "━━━━━━━━━━━━━━━━━━━━"
-    )
-
-    lines.append("")
-
-    lines.append(
-        "⚠️ Always check the original "
-        "opportunity before applying. "
-        "Dates, availability and eligibility "
-        "can change."
-    )
-
-    lines.append("")
-
-    lines.append(
-        "🎓 KS5 Progression Hub"
-    )
-
-    return "\n".join(lines)
 
 
 # ============================================================
@@ -2825,65 +2100,37 @@ with st.sidebar:
         "🎛️ Bulletin Controls"
     )
 
-    st.subheader(
-        "🎓 Apprenticeships"
-    )
-
-    selected_level = st.selectbox(
-        "Apprenticeship level",
-        [
-            "All levels",
-            "Level 2",
-            "Level 3",
-            "Level 4",
-            "Level 5",
-            "Level 6",
-            "Level 7",
-        ],
-    )
-
     selected_career = st.selectbox(
         "Career area",
-        [
-            "All categories",
-            "Digital",
-            "Engineering",
-            "Business & Administration",
-            "Finance & Legal",
-            "Health & Science",
-            "Creative & Media",
-            "Construction",
-            "Education",
-        ],
-    )
-
-    st.subheader(
-        "🏫 University events"
+        list(
+            CAREER_KEYWORDS.keys()
+        ),
     )
 
     months_ahead = st.slider(
-        "Look ahead",
+        "University look-ahead",
         min_value=1,
-        max_value=12,
-        value=3,
+        max_value=6,
+        value=2,
     )
 
     st.divider()
 
     if st.button(
-        "🚀 BUILD / REFRESH BULLETIN",
-        use_container_width=True,
+        "🚀 BUILD THIS WEEK'S BULLETIN",
         type="primary",
+        use_container_width=True,
     ):
 
         with st.spinner(
-            "Searching live progression sources..."
+            "Checking universities, apprenticeships and opportunities..."
         ):
 
-            new_items, statuses = refresh_all(
-                selected_level,
-                selected_career,
-                months_ahead,
+            new_items, statuses = (
+                refresh_all(
+                    selected_career,
+                    months_ahead,
+                )
             )
 
             st.session_state.items = (
@@ -2901,7 +2148,7 @@ with st.sidebar:
             )
 
         st.success(
-            "Bulletin refreshed."
+            "Weekly bulletin built."
         )
 
         st.rerun()
@@ -2913,18 +2160,29 @@ with st.sidebar:
 
 st.markdown(
     f"""
-<div class="hero">
+    <div class="hero">
 
-<h1>🎓 KS5 Progression Hub</h1>
+    <h1>
+    🎓 KS5 Progression Hub
+    </h1>
 
-<p>
-Live apprenticeships • University open days •
-UCAS deadlines • Work experience •
-Progression resources
-</p>
+    <p>
+    What do students actually need to know
+    this week?
+    </p>
 
-</div>
-""",
+    <p>
+    📍 North West universities
+    &nbsp; • &nbsp;
+    🎓 Degree apprenticeships
+    &nbsp; • &nbsp;
+    💼 Opportunities
+    &nbsp; • &nbsp;
+    💡 Weekly action
+    </p>
+
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -2937,49 +2195,54 @@ if not st.session_state.items:
 
     st.info(
         """
-### Ready to build this week's bulletin
+        ### Ready to build this week's progression update
 
-The hub will search:
+        The Hub will look for:
 
-🎓 **Government apprenticeship vacancies**
+        🏫 **North West university open days**
 
-🏫 **UCAS university open days**
+        🎓 **Degree and higher apprenticeships**
 
-📅 **Official UCAS deadlines**
+        💼 **Live apprenticeship opportunities**
 
-💼 **Work experience / career experience**
+        📅 **Important progression dates**
 
-⭐ **Amazing Apprenticeships resources**
+        🏫 **Your own college activities**
 
-Then it will turn everything into a
-student-friendly Microsoft Teams bulletin.
-"""
+        💡 **A weekly student action**
+
+        The Teams bulletin will deliberately show only
+        the **most important items**, rather than dumping
+        every search result onto students.
+        """
     )
 
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
         st.metric(
-            "🎓 Apprenticeships",
-            "LIVE",
+            "🏫 Universities",
+            len(
+                NORTH_WEST_UNIVERSITIES
+            ),
         )
 
     with c2:
         st.metric(
-            "🏫 Open Days",
+            "🎓 Degree routes",
             "LIVE",
         )
 
     with c3:
         st.metric(
-            "📅 UCAS Dates",
-            "LIVE",
+            "💡 Weekly action",
+            "1",
         )
 
     with c4:
         st.metric(
-            "💼 Experience",
-            "LIVE",
+            "📢 Teams items",
+            "MAX 5",
         )
 
     st.stop()
@@ -2989,35 +2252,20 @@ student-friendly Microsoft Teams bulletin.
 # DATA
 # ============================================================
 
-items = st.session_state.get(
-    "items",
-    [],
-)
-
-if not isinstance(
-    items,
-    list,
-):
-    items = []
-
-# Safety validation
 items = [
     item
-    for item in items
-    if isinstance(
-        item,
-        dict,
-    )
+    for item
+    in st.session_state.items
+    if isinstance(item, dict)
 ]
 
 
-# ============================================================
-# SECTION COUNTS
-# ============================================================
+priorities = get_priorities(
+    items
+)
 
-apprenticeships = category_items(
-    items,
-    "🎓 Apprenticeship",
+highlights = weekly_highlights(
+    items
 )
 
 open_days = category_items(
@@ -3025,24 +2273,28 @@ open_days = category_items(
     "🏫 University Open Day",
 )
 
+degree_apps = category_items(
+    items,
+    "🎓 Degree Apprenticeship",
+)
+
+apprenticeships = category_items(
+    items,
+    "🎓 Apprenticeship",
+)
+
 key_dates = category_items(
     items,
     "📅 Key Date",
 )
 
-work_experience = category_items(
-    items,
-    "💼 Work Experience",
-)
-
-resources = category_items(
-    items,
-    "⭐ Resource",
-)
-
-priorities = get_priorities(
-    items
-)
+college_items = [
+    item
+    for item
+    in items
+    if item.get("source")
+    == "College added"
+]
 
 
 # ============================================================
@@ -3052,38 +2304,33 @@ priorities = get_priorities(
 c1, c2, c3, c4, c5 = st.columns(5)
 
 with c1:
-
     st.metric(
-        "🎓 Apprenticeships",
-        len(apprenticeships),
+        "🔥 This week's picks",
+        len(highlights),
     )
 
 with c2:
-
     st.metric(
-        "🏫 Open Days",
+        "🏫 Open days",
         len(open_days),
     )
 
 with c3:
-
     st.metric(
-        "📅 Key Dates",
-        len(key_dates),
+        "🎓 Degree apprenticeships",
+        len(degree_apps),
     )
 
 with c4:
-
     st.metric(
-        "💼 Experience",
-        len(work_experience),
+        "💼 Other apprenticeships",
+        len(apprenticeships),
     )
 
 with c5:
-
     st.metric(
-        "🚨 Priorities",
-        len(priorities),
+        "🏫 College activities",
+        len(college_items),
     )
 
 
@@ -3101,44 +2348,243 @@ if st.session_state.last_refresh:
 
 tabs = st.tabs(
     [
-        "🚨 Priorities",
-        "🎓 Apprenticeships",
-        "🏫 Open Days",
+        "🔥 This Week",
+        "💡 Weekly Action",
+        "🎓 Degree Apprenticeships",
+        "🏫 North West Open Days",
+        "💼 Apprenticeships",
         "📅 Key Dates",
-        "💼 Work Experience",
-        "⭐ Resources",
+        "🏫 College Activities",
         "📢 Teams Bulletin",
-        "➕ Add Opportunity",
+        "➕ Add Activity",
+        "🔎 All Opportunities",
         "⚙️ Sources",
     ]
 )
 
 
 # ============================================================
-# PRIORITIES
+# THIS WEEK
 # ============================================================
 
 with tabs[0]:
 
     st.header(
-        "🚨 This week's priorities"
+        "🔥 This Week"
     )
 
-    if not priorities:
+    st.write(
+        "The most important progression information "
+        "for students this week."
+    )
+
+    display_weekly_action()
+
+    st.subheader(
+        "🔥 Don't miss"
+    )
+
+    if not highlights:
 
         st.success(
-            "No urgent opportunities detected."
+            "No major opportunities were identified."
         )
 
     else:
 
         for index, item in enumerate(
-            priorities
+            highlights
         ):
 
             display_card(
                 item,
-                f"priority_{index}",
+                f"highlight_{index}",
+            )
+
+
+# ============================================================
+# WEEKLY ACTION
+# ============================================================
+
+with tabs[1]:
+
+    st.header(
+        "💡 Weekly Student Action"
+    )
+
+    st.write(
+        "One practical task designed to move "
+        "students' post-18 plans forward."
+    )
+
+    display_weekly_action()
+
+    st.subheader(
+        "📚 The action programme"
+    )
+
+    for index, action in enumerate(
+        WEEKLY_ACTIONS,
+        start=1,
+    ):
+
+        with st.expander(
+            f"{index}. {action['title']}"
+        ):
+
+            st.write(
+                action["text"]
+            )
+
+            st.success(
+                action["target"]
+            )
+
+
+# ============================================================
+# DEGREE APPRENTICESHIPS
+# ============================================================
+
+with tabs[2]:
+
+    st.header(
+        "🎓 Degree & Higher Apprenticeships"
+    )
+
+    st.info(
+        """
+        This section is specifically designed to find
+        **degree-level apprenticeship routes**, including
+        Level 6, Level 7, higher and chartered apprenticeships.
+
+        These are kept separate from ordinary Level 2–5
+        apprenticeship vacancies.
+        """
+    )
+
+    search = st.text_input(
+        "🔎 Search degree apprenticeships",
+        placeholder=(
+            "Try: digital, engineering, finance, law, "
+            "Liverpool, Manchester..."
+        ),
+        key="degree_search",
+    )
+
+    filtered = [
+        item
+        for item in degree_apps
+        if search.lower()
+        in (
+            item.get("title", "")
+            + " "
+            + item.get(
+                "description",
+                "",
+            )
+            + " "
+            + item.get(
+                "location",
+                "",
+            )
+        ).lower()
+    ]
+
+    filtered.sort(
+        key=ranking_score,
+        reverse=True,
+    )
+
+    if not filtered:
+
+        st.warning(
+            "No degree apprenticeship results matched."
+        )
+
+    else:
+
+        for index, item in enumerate(
+            filtered
+        ):
+
+            display_card(
+                item,
+                f"degree_{index}",
+            )
+
+
+# ============================================================
+# NORTH WEST OPEN DAYS
+# ============================================================
+
+with tabs[3]:
+
+    st.header(
+        "🏫 North West University Open Days"
+    )
+
+    st.info(
+        """
+        The Hub prioritises universities in the North West,
+        including Liverpool, Manchester, Chester, Lancashire
+        and Cumbria.
+        """
+    )
+
+    search = st.text_input(
+        "🔎 Search university open days",
+        placeholder=(
+            "Liverpool, Manchester, engineering..."
+        ),
+        key="university_search",
+    )
+
+    filtered = [
+        item
+        for item in open_days
+        if search.lower()
+        in (
+            item.get("title", "")
+            + " "
+            + item.get(
+                "organisation",
+                "",
+            )
+            + " "
+            + item.get(
+                "location",
+                "",
+            )
+        ).lower()
+    ]
+
+    filtered.sort(
+        key=lambda x: (
+            parse_date(
+                x.get(
+                    "event_date",
+                    "",
+                )
+            )
+            or date.max
+        )
+    )
+
+    if not filtered:
+
+        st.warning(
+            "No upcoming North West open days found."
+        )
+
+    else:
+
+        for index, item in enumerate(
+            filtered
+        ):
+
+            display_card(
+                item,
+                f"uni_{index}",
             )
 
 
@@ -3146,36 +2592,48 @@ with tabs[0]:
 # APPRENTICESHIPS
 # ============================================================
 
-with tabs[1]:
+with tabs[4]:
 
     st.header(
-        "🎓 Live Apprenticeships"
-    )
-
-    st.write(
-        "These are actual vacancies found on "
-        "the Government Find an Apprenticeship "
-        "service, plus selected specialist "
-        "higher/degree apprenticeship resources."
+        "💼 Apprenticeships"
     )
 
     search = st.text_input(
         "🔎 Search apprenticeships",
         placeholder=(
-            "Try: engineering, finance, "
-            "digital, accounting, AI..."
+            "engineering, finance, digital..."
         ),
+        key="general_apprenticeship_search",
     )
 
-    filtered = search_items(
-        apprenticeships,
-        search,
+    filtered = [
+        item
+        for item in apprenticeships
+        if search.lower()
+        in (
+            item.get("title", "")
+            + " "
+            + item.get(
+                "description",
+                "",
+            )
+            + " "
+            + item.get(
+                "location",
+                "",
+            )
+        ).lower()
+    ]
+
+    filtered.sort(
+        key=ranking_score,
+        reverse=True,
     )
 
     if not filtered:
 
         st.warning(
-            "No apprenticeships matched."
+            "No apprenticeship results matched."
         )
 
     else:
@@ -3191,63 +2649,13 @@ with tabs[1]:
 
 
 # ============================================================
-# OPEN DAYS
-# ============================================================
-
-with tabs[2]:
-
-    st.header(
-        "🏫 Upcoming University Open Days"
-    )
-
-    st.info(
-        "Only events with a date found on the "
-        "UCAS event listing are included. "
-        "Use the original UCAS link before "
-        "publishing if you want a final manual check."
-    )
-
-    search = st.text_input(
-        "🔎 Search open days",
-        placeholder=(
-            "Try: Manchester, engineering, "
-            "Oxford, Liverpool..."
-        ),
-        key="open_day_search",
-    )
-
-    filtered = search_items(
-        open_days,
-        search,
-    )
-
-    if not filtered:
-
-        st.warning(
-            "No upcoming open days were found "
-            "within your selected look-ahead period."
-        )
-
-    else:
-
-        for index, item in enumerate(
-            filtered
-        ):
-
-            display_card(
-                item,
-                f"open_day_{index}",
-            )
-
-
-# ============================================================
 # KEY DATES
 # ============================================================
 
-with tabs[3]:
+with tabs[5]:
 
     st.header(
-        "📅 UCAS Key Dates"
+        "📅 Important Dates"
     )
 
     for index, item in enumerate(
@@ -3262,53 +2670,54 @@ with tabs[3]:
 
 
 # ============================================================
-# WORK EXPERIENCE
+# COLLEGE ACTIVITIES
 # ============================================================
 
-with tabs[4]:
+with tabs[6]:
 
     st.header(
-        "💼 Work Experience & Career Experience"
+        "🏫 College Activities & Events"
     )
 
-    for index, item in enumerate(
-        work_experience
-    ):
-
-        display_card(
-            item,
-            f"work_{index}",
-        )
-
-
-# ============================================================
-# RESOURCES
-# ============================================================
-
-with tabs[5]:
-
-    st.header(
-        "⭐ Progression Resources"
+    st.write(
+        "Activities you have added yourself."
     )
 
-    for index, item in enumerate(
-        resources
-    ):
+    if not college_items:
 
-        display_card(
-            item,
-            f"resource_{index}",
+        st.info(
+            "You haven't added any college activities yet."
         )
+
+    else:
+
+        for index, item in enumerate(
+            college_items
+        ):
+
+            display_card(
+                item,
+                f"college_{index}",
+            )
 
 
 # ============================================================
 # TEAMS BULLETIN
 # ============================================================
 
-with tabs[6]:
+with tabs[7]:
 
     st.header(
         "📢 Microsoft Teams Bulletin"
+    )
+
+    st.success(
+        """
+        This is intentionally short.
+
+        The bulletin contains the weekly action plus
+        a maximum of five priority opportunities/events.
+        """
     )
 
     bulletin = build_bulletin(
@@ -3318,14 +2727,14 @@ with tabs[6]:
     st.text_area(
         "Copy this into Microsoft Teams",
         bulletin,
-        height=900,
+        height=600,
     )
 
     st.download_button(
-        "📥 Download bulletin",
+        "📥 Download Teams bulletin",
         bulletin,
         file_name=(
-            "KS5_Progression_Bulletin_"
+            "KS5_Progression_"
             + TODAY.isoformat()
             + ".txt"
         ),
@@ -3333,79 +2742,113 @@ with tabs[6]:
         use_container_width=True,
     )
 
-    st.success(
-        "The bulletin is generated from the "
-        "opportunities currently loaded into the hub."
-    )
+    st.divider()
 
-
-# ============================================================
-# ADD COLLEGE OPPORTUNITY
-# ============================================================
-
-with tabs[7]:
-
-    st.header(
-        "➕ Add your own opportunity"
+    st.subheader(
+        "Why is it short?"
     )
 
     st.write(
-        "Add a college event, employer visit, "
-        "work experience placement, university "
-        "session or other progression opportunity."
+        """
+        Students are more likely to act on a small number
+        of clear messages than a long list of opportunities.
+
+        The full opportunity database remains available
+        inside the Hub.
+        """
+    )
+
+
+# ============================================================
+# ADD ACTIVITY
+# ============================================================
+
+with tabs[8]:
+
+    st.header(
+        "➕ Add Your Own Activity or Event"
+    )
+
+    st.write(
+        """
+        Add anything that students at your sixth form
+        need to know about. Your own activities can be
+        promoted alongside live external opportunities.
+        """
     )
 
     with st.form(
-        "custom_opportunity"
+        "add_college_activity"
     ):
 
         title = st.text_input(
-            "Title"
+            "Activity / event title",
+            placeholder=(
+                "e.g. CV Workshop"
+            ),
         )
 
         organisation = st.text_input(
-            "Organisation"
+            "Organisation",
+            value="College",
         )
 
         category = st.selectbox(
-            "Category",
+            "Type",
             [
-                "🎓 Apprenticeship",
-                "🏫 University Open Day",
-                "📅 Key Date",
+                "🏫 College Activity",
                 "💼 Work Experience",
-                "⭐ Resource",
+                "🎓 University Session",
+                "🎓 Apprenticeship Session",
+                "📅 College Deadline",
+                "🎤 Employer Talk",
+                "📝 Application Workshop",
+                "Other",
             ],
         )
 
         description = st.text_area(
-            "Description"
+            "Short description",
+            placeholder=(
+                "Keep this short and student-friendly."
+            ),
         )
 
-        event_date = st.text_input(
-            "Date"
+        event_date = st.date_input(
+            "Date",
+            value=TODAY,
         )
 
-        closing_date = st.text_input(
-            "Closing date"
+        closing_date = st.date_input(
+            "Closing / booking date",
+            value=TODAY,
         )
 
         location = st.text_input(
-            "Location"
+            "Location",
+            placeholder=(
+                "e.g. Careers Centre / Room 12 / Online"
+            ),
         )
 
         url = st.text_input(
-            "Original link"
+            "Booking / information link",
+            placeholder="https://...",
+        )
+
+        featured = st.checkbox(
+            "🔥 Feature this in this week's bulletin",
+            value=True,
         )
 
         submitted = st.form_submit_button(
-            "➕ Add to bulletin",
+            "➕ Add activity",
             type="primary",
         )
 
         if submitted:
 
-            if not title:
+            if not title.strip():
 
                 st.error(
                     "Please enter a title."
@@ -3416,22 +2859,37 @@ with tabs[7]:
                 new_item = make_item(
                     title=title,
                     organisation=organisation,
-                    category=category,
+                    category=(
+                        "🏫 College Activity"
+                    ),
                     description=description,
-                    event_date=event_date,
-                    closing_date=closing_date,
+                    event_date=(
+                        event_date.strftime(
+                            "%d %B %Y"
+                        )
+                    ),
+                    closing_date=(
+                        closing_date.strftime(
+                            "%d %B %Y"
+                        )
+                    ),
                     location=location,
                     url=url,
                     source="College added",
                     tags=[
-                        "College opportunity"
+                        "🏫 College activity"
                     ],
-                    priority=400,
-                    verified=False,
+                    priority=850,
+                    verified=True,
+                    featured=featured,
                 )
 
                 st.session_state.custom_items.append(
                     new_item
+                )
+
+                save_custom_items(
+                    st.session_state.custom_items
                 )
 
                 st.session_state.items.append(
@@ -3439,80 +2897,154 @@ with tabs[7]:
                 )
 
                 st.success(
-                    "Added."
+                    "Activity added to the Hub."
                 )
 
                 st.rerun()
 
 
 # ============================================================
-# SOURCES
+# ALL OPPORTUNITIES
 # ============================================================
 
-with tabs[8]:
+with tabs[9]:
 
     st.header(
-        "⚙️ Sources & verification"
+        "🔎 All Opportunities"
     )
 
     st.write(
-        "The hub deliberately keeps original "
-        "sources visible. This is important because "
-        "opportunities and dates can change."
+        "This is the full database. It is deliberately "
+        "separate from the short weekly Teams bulletin."
     )
 
-    sources = [
-
-        (
-            "🎓 Government Find an Apprenticeship",
-            GOV_APPRENTICESHIP_URL,
-            "Live Government apprenticeship vacancies.",
+    search = st.text_input(
+        "🔎 Search everything",
+        placeholder=(
+            "Try: Liverpool, law, engineering, apprenticeship..."
         ),
+        key="all_search",
+    )
 
-        (
-            "🏫 UCAS Open Days & Events",
-            UCAS_EVENTS_URL,
-            "University open days and higher education events.",
-        ),
-
-        (
-            "📅 UCAS Key Dates",
-            UCAS_DEADLINES_URL,
-            "Official 2027 application dates.",
-        ),
-
-        (
-            "⭐ Amazing Apprenticeships",
-            AMAZING_LISTING_URL,
-            "Higher and degree apprenticeship listing.",
-        ),
-
-        (
-            "💼 Forage",
-            FORAGE_URL,
-            "Virtual work experience / job simulations.",
-        ),
-
-        (
-            "💼 National Careers Service",
-            NCS_URL,
-            "Career profiles and progression information.",
-        ),
-
+    filtered = [
+        item
+        for item in items
+        if search.lower()
+        in (
+            item.get("title", "")
+            + " "
+            + item.get(
+                "organisation",
+                "",
+            )
+            + " "
+            + item.get(
+                "description",
+                "",
+            )
+            + " "
+            + item.get(
+                "location",
+                "",
+            )
+        ).lower()
     ]
 
-    for name, url, description in sources:
+    filtered.sort(
+        key=ranking_score,
+        reverse=True,
+    )
 
-        st.subheader(name)
+    st.caption(
+        f"{len(filtered)} results"
+    )
 
-        st.write(description)
+    for index, item in enumerate(
+        filtered
+    ):
 
-        st.link_button(
-            "Open source",
-            url,
+        display_card(
+            item,
+            f"all_{index}",
         )
 
-        st.divider()
+
+# ============================================================
+# SOURCES
+# ============================================================
+
+with tabs[10]:
+
+    st.header(
+        "⚙️ Sources & Search Coverage"
+    )
+
+    st.write(
+        """
+        The Hub searches public web results rather than
+        requiring the Government Apprenticeship API key.
+        Always check the original opportunity before applying.
+        """
+    )
+
+    st.subheader(
+        "🏫 North West university watchlist"
+    )
+
+    for university, details in (
+        NORTH_WEST_UNIVERSITIES.items()
+    ):
+
+        st.write(
+            f"**{university}** — "
+            f"{details['city']} — "
+            f"{details['domain']}"
+        )
+
+    st.divider()
+
+    st.subheader(
+        "🔎 Current search status"
+    )
+
+    for source, status in (
+        st.session_state.source_status.items()
+    ):
+
+        st.write(
+            f"**{source}:**"
+        )
+
+        if isinstance(
+            status,
+            dict,
+        ):
+
+            for university, result in (
+                status.items()
+            ):
+
+                st.write(
+                    f"- {university}: "
+                    f"{result}"
+                )
+
+        else:
+
+            st.write(
+                status
+            )
+
+    st.divider()
+
+    st.warning(
+        """
+        Search-engine results are used to discover public
+        opportunities. Dates and availability can change,
+        so students should always use the original source
+        before booking or applying.
+        """
+    )
 
 
 # ============================================================
@@ -3523,6 +3055,6 @@ st.divider()
 
 st.caption(
     "🎓 KS5 Progression Hub • "
-    "Live-source progression bulletin • "
-    f"{format_date(TODAY)}"
+    "Weekly progression intelligence • "
+    f"{TODAY.strftime('%d %B %Y')}"
 )
